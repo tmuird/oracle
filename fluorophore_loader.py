@@ -233,11 +233,76 @@ class FluorophoreLoader:
         return names
 
 
+def filter_bad_fluorophores(
+    ds: xr.Dataset,
+    min_max_intensity: float = 0.1,
+    min_std: float = 0.05,
+    min_range: float = 0.1,
+    verbose: bool = True,
+) -> xr.Dataset:
+    """
+    Filter out low-quality fluorophore spectra.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Fluorophore dataset
+    min_max_intensity : float
+        Minimum peak intensity (after normalization)
+    min_std : float
+        Minimum standard deviation (rejects flat lines)
+    min_range : float
+        Minimum dynamic range (max - min)
+    verbose : bool
+        Print filtering report
+
+    Returns
+    -------
+    xr.Dataset
+        Filtered dataset with only good fluorophores
+    """
+    n_original = len(ds['sample'])
+    good_indices = []
+
+    for i in range(n_original):
+        spectrum = ds['intensity'].isel(sample=i).values
+        name = ds['fluorophore_name'].isel(sample=i).values
+
+        # Quality checks
+        max_val = spectrum.max()
+        std_val = spectrum.std()
+        range_val = spectrum.max() - spectrum.min()
+
+        is_good = (
+            max_val >= min_max_intensity
+            and std_val >= min_std
+            and range_val >= min_range
+        )
+
+        if is_good:
+            good_indices.append(i)
+        elif verbose:
+            print(f"  Filtered out: {name} (max={max_val:.3f}, std={std_val:.3f}, range={range_val:.3f})")
+
+    if verbose:
+        print(f"\nFiltering summary:")
+        print(f"  Original: {n_original} fluorophores")
+        print(f"  Kept: {len(good_indices)} fluorophores")
+        print(f"  Removed: {n_original - len(good_indices)} fluorophores")
+
+    if len(good_indices) == 0:
+        raise ValueError("All fluorophores were filtered out! Adjust filter thresholds.")
+
+    return ds.isel(sample=good_indices)
+
+
 def load_fluorophores(
     csv_path: str,
     laser_nm: float = 532.0,
     crop_range: Optional[Tuple[float, float]] = None,
     use_wavenumber: bool = True,
+    filter_bad: bool = True,
+    min_quality: float = 0.1,
 ) -> xr.Dataset:
     """
     Convenience function to load fluorophore spectra.
@@ -253,6 +318,11 @@ def load_fluorophores(
         Example: (400, 1800) for typical Raman range
     use_wavenumber : bool
         Convert to wavenumber (Raman shift) instead of wavelength
+    filter_bad : bool
+        If True, automatically filter out low-quality fluorophores
+        (near-zero, flat lines, low dynamic range)
+    min_quality : float
+        Minimum quality threshold for filtering (max intensity, std, range)
 
     Returns
     -------
@@ -276,11 +346,27 @@ def load_fluorophores(
     ... )
     """
     loader = FluorophoreLoader(csv_path, laser_nm=laser_nm)
-    return loader.to_xarray(
+    ds = loader.to_xarray(
         use_wavenumber=use_wavenumber,
         crop_range=crop_range,
         normalize=False,
     )
+
+    # Filter out bad fluorophores if requested
+    if filter_bad:
+        print("\n" + "=" * 60)
+        print("FILTERING LOW-QUALITY FLUOROPHORES")
+        print("=" * 60)
+        ds = filter_bad_fluorophores(
+            ds,
+            min_max_intensity=min_quality,
+            min_std=min_quality * 0.5,
+            min_range=min_quality,
+            verbose=True,
+        )
+        print("=" * 60 + "\n")
+
+    return ds
 
 
 # Example usage

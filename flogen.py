@@ -31,17 +31,37 @@ class SyntheticConfig:
     # Fluorophore parameters
     n_fluorophores: int = 3
 
-    # Decay rates: uniform sampling from [min, max] in s⁻¹
-    # Default ranges chosen so fluorescence decay is visible over typical time scales
+    # Decay rate sampling strategy
+    # "uniform": Uniform sampling of decay rates (biased toward fast decay)
+    # "log_uniform": Log-uniform sampling (balanced slow/medium/fast)
+    # "multi_component": Explicit slow/medium/fast components (most realistic)
+    decay_sampling: Literal["uniform", "log_uniform", "multi_component"] = "multi_component"
+
+    # Decay rates: used differently depending on decay_sampling mode
+    # - For "uniform" and "log_uniform": min/max bounds
+    # - For "multi_component": see decay_component_ranges below
     decay_rate_min: float = 0.1  # s⁻¹ (τ = 10s, slow decay)
     decay_rate_max: float = 5.0  # s⁻¹ (τ = 0.2s, fast decay)
 
-    # Abundances: relative weights of each fluorophore
-    # Will be normalized to achieve target F/R ratio
-    abundance_min: float = 0.1
-    abundance_max: float = 2.0
+    # Multi-component decay ranges (only used if decay_sampling="multi_component")
+    # Ensures realistic slow/medium/fast components
+    # Format: (min, max) for each component type
+    decay_slow_range: Tuple[float, float] = (0.05, 0.3)    # τ = 3-20s (very slow)
+    decay_medium_range: Tuple[float, float] = (0.3, 1.0)   # τ = 1-3s (medium)
+    decay_fast_range: Tuple[float, float] = (1.0, 5.0)     # τ = 0.2-1s (fast)
 
-    # Fluorescence-to-Raman ratio at t=0
+    # Fluorophore mixing weights (RELATIVE, not absolute)
+    # These control ONLY the relative contributions between fluorophores
+    # Example: weights [0.5, 1.0, 2.0] means Fluorophore 3 contributes 4x more than Fluorophore 1
+    # Final absolute abundances are automatically scaled to achieve fr_ratio target
+    # Note: The actual abundance values will be much larger than this range!
+    fluorophore_weight_min: float = 0.5
+    fluorophore_weight_max: float = 2.0
+
+    # Total fluorescence intensity (ABSOLUTE scale)
+    # F/R ratio at t=0: (total fluorescence peak) / (Raman peak)
+    # This controls how much fluorescence contamination is present
+    # Higher ratio = more fluorescence relative to Raman signal
     fr_ratio_min: float = 3.0
     fr_ratio_max: float = 15.0
 
@@ -67,6 +87,13 @@ class SyntheticConfig:
     polynomial_degree: int = (
         3  # Degree of polynomial for interpolation of real fluorophore spectra if using polynomial method
     )
+
+    # Fluorophore basis parameterization
+    # If True, fluorophores are parameterized as polynomials (matching decomposition.py polynomial basis)
+    # If False, fluorophores are stored as full arrays (one value per wavenumber)
+    use_polynomial_fluorophores: bool = False
+    fluorophore_polynomial_degree: int = 3  # Degree of polynomial for fluorophore parameterization
+
     # Random seed
     seed: Optional[int] = None
 
@@ -84,6 +111,20 @@ class SyntheticConfig:
             raise ValueError("poisson_noise_scale must be non-negative")
         if self.gaussian_noise_scale < 0:
             raise ValueError("gaussian_noise_scale must be non-negative")
+
+        # Validate multi-component ranges
+        if self.decay_sampling == "multi_component":
+            if self.decay_slow_range[0] >= self.decay_slow_range[1]:
+                raise ValueError("decay_slow_range must be (min, max) with min < max")
+            if self.decay_medium_range[0] >= self.decay_medium_range[1]:
+                raise ValueError("decay_medium_range must be (min, max) with min < max")
+            if self.decay_fast_range[0] >= self.decay_fast_range[1]:
+                raise ValueError("decay_fast_range must be (min, max) with min < max")
+            # Warn if ranges overlap significantly
+            if self.decay_slow_range[1] > self.decay_medium_range[0]:
+                print("Warning: decay_slow_range and decay_medium_range overlap")
+            if self.decay_medium_range[1] > self.decay_fast_range[0]:
+                print("Warning: decay_medium_range and decay_fast_range overlap")
 
     def __post_init__(self):
         self.validate()
@@ -165,6 +206,18 @@ class SyntheticBleachingDataset:
 
         if config.shared_bases:
             self.shared_bases = self._generate_fluorophore_bases(ref_wavenumbers)
+
+            # If using polynomial fluorophores, fit and re-evaluate to get polynomial-approximated version
+            # This ensures consistency: stored bases exactly match what model will reconstruct
+            if config.use_polynomial_fluorophores:
+                poly_coeffs = self._fit_polynomial_fluorophores(
+                    self.shared_bases, ref_wavenumbers
+                )
+                # Replace with polynomial-evaluated version
+                self.shared_bases = self._evaluate_polynomial_fluorophores(
+                    poly_coeffs, ref_wavenumbers
+                )
+                print(f"✓ Using polynomial-parameterized fluorophores (degree={config.fluorophore_polynomial_degree})")
         else:
             self.shared_bases = None
 
@@ -348,12 +401,167 @@ class SyntheticBleachingDataset:
 
         return bases
 
+    def _fit_polynomial_fluorophores(
+        self, bases: np.ndarray, wavenumbers: np.ndarray
+    ) -> np.ndarray:
+        """
+        Fit polynomials to fluorophore bases (matching decomposition.py).
+
+        This ensures consistency between data generation and model.
+
+        Parameters
+        ----------
+        bases : np.ndarray
+            Fluorophore bases, shape (n_fluorophores, n_wavenumbers)
+        wavenumbers : np.ndarray
+            Wavenumber axis
+
+        Returns
+        -------
+        poly_coeffs : np.ndarray
+            Polynomial coefficients, shape (n_fluorophores, poly_degree+1)
+            Coefficients are in ASCENDING power order: [c_0, c_1, ..., c_n]
+            to match Vandermonde matrix in decomposition.py
+        """
+        n_fluorophores = bases.shape[0]
+        poly_degree = self.config.fluorophore_polynomial_degree
+        n_coeffs = poly_degree + 1
+
+        # Normalize wavenumbers to [-1, 1] for numerical stability
+        # (matching decomposition.py lines 104-105)
+        wn_min, wn_max = wavenumbers.min(), wavenumbers.max()
+        wn_norm = 2.0 * (wavenumbers - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
+
+        # Fit polynomial to LOG of each fluorophore basis
+        # (matching decomposition.py lines 110-117)
+        poly_coeffs = np.zeros((n_fluorophores, n_coeffs))
+
+        for i in range(n_fluorophores):
+            # Fit to log-space (add epsilon to avoid log(0))
+            log_bases = np.log(bases[i] + 1e-8)
+            coeffs = np.polyfit(wn_norm, log_bases, deg=poly_degree)
+
+            # IMPORTANT: np.polyfit returns DESCENDING order [c_n, ..., c_0]
+            # Reverse to ASCENDING order [c_0, ..., c_n] to match Vandermonde
+            coeffs = coeffs[::-1]
+
+            poly_coeffs[i] = coeffs
+
+        return poly_coeffs
+
+    def _evaluate_polynomial_fluorophores(
+        self, poly_coeffs: np.ndarray, wavenumbers: np.ndarray
+    ) -> np.ndarray:
+        """
+        Evaluate polynomial fluorophores (matching decomposition.py).
+
+        Parameters
+        ----------
+        poly_coeffs : np.ndarray
+            Polynomial coefficients, shape (n_fluorophores, poly_degree+1)
+            In ASCENDING power order: [c_0, c_1, ..., c_n]
+        wavenumbers : np.ndarray
+            Wavenumber axis
+
+        Returns
+        -------
+        bases : np.ndarray
+            Evaluated fluorophore bases, shape (n_fluorophores, n_wavenumbers)
+        """
+        poly_degree = poly_coeffs.shape[1] - 1
+
+        # Normalize wavenumbers (matching decomposition.py lines 133-134)
+        wn_min, wn_max = wavenumbers.min(), wavenumbers.max()
+        wn_norm = 2.0 * (wavenumbers - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
+
+        # Build Vandermonde matrix (matching decomposition.py lines 140-141)
+        # Columns are [1, x, x^2, ..., x^n] (ASCENDING powers)
+        vandermonde = np.stack([wn_norm**k for k in range(poly_degree + 1)], axis=1)
+        # Shape: (n_wavenumbers, n_coeffs)
+
+        # Evaluate: poly_coeffs @ vandermonde.T
+        # (n_fluorophores, n_coeffs) @ (n_coeffs, n_wavenumbers)
+        # = (n_fluorophores, n_wavenumbers)
+        poly_values = poly_coeffs @ vandermonde.T
+
+        # Apply exp for positivity (matching decomposition.py line 198)
+        bases = np.exp(poly_values)
+
+        # CRITICAL: Normalize each basis to max=1.0
+        # Polynomial approximation introduces scale errors (can be ~17% off!)
+        # Normalization ensures consistency with abundance calculations (lines 596-606)
+        # which assume bases have max=1.0
+        for i in range(bases.shape[0]):
+            if bases[i].max() > 0:
+                bases[i] = bases[i] / bases[i].max()
+
+        return bases
+
     def _generate_decay_rates(self) -> np.ndarray:
-        """Sample decay rates uniformly from configured range."""
+        """
+        Sample decay rates according to configured sampling strategy.
+
+        Three strategies:
+        1. "uniform": Uniform sampling in λ-space (biased toward fast decay)
+        2. "log_uniform": Uniform sampling in log(λ)-space (balanced)
+        3. "multi_component": Explicit slow/medium/fast components (realistic)
+
+        Returns
+        -------
+        decay_rates : np.ndarray
+            Shape (n_fluorophores,) in units of s⁻¹
+        """
         n_f = self.config.n_fluorophores
-        return self.rng.uniform(
-            self.config.decay_rate_min, self.config.decay_rate_max, size=n_f
-        )
+
+        if self.config.decay_sampling == "uniform":
+            # Standard uniform sampling (biased toward fast decay)
+            return self.rng.uniform(
+                self.config.decay_rate_min,
+                self.config.decay_rate_max,
+                size=n_f
+            )
+
+        elif self.config.decay_sampling == "log_uniform":
+            # Log-uniform sampling (balanced slow/medium/fast)
+            log_min = np.log(self.config.decay_rate_min)
+            log_max = np.log(self.config.decay_rate_max)
+            log_rates = self.rng.uniform(log_min, log_max, size=n_f)
+            return np.exp(log_rates)
+
+        elif self.config.decay_sampling == "multi_component":
+            # Explicit slow/medium/fast components
+            # Distribute fluorophores across component types
+            decay_rates = []
+
+            # Assign fluorophores to components
+            # For n_f=3: [slow, medium, fast]
+            # For n_f=4: [slow, slow, medium, fast]
+            # For n_f=5: [slow, slow, medium, fast, fast]
+            components = ["slow"] * ((n_f + 2) // 3) + \
+                        ["medium"] * ((n_f + 1) // 3) + \
+                        ["fast"] * (n_f // 3)
+
+            # Trim to exact count
+            components = components[:n_f]
+
+            # Sample from appropriate range for each component
+            for comp in components:
+                if comp == "slow":
+                    rate = self.rng.uniform(*self.config.decay_slow_range)
+                elif comp == "medium":
+                    rate = self.rng.uniform(*self.config.decay_medium_range)
+                else:  # fast
+                    rate = self.rng.uniform(*self.config.decay_fast_range)
+                decay_rates.append(rate)
+
+            # Shuffle to avoid always having slow first
+            decay_rates = np.array(decay_rates)
+            self.rng.shuffle(decay_rates)
+
+            return decay_rates
+
+        else:
+            raise ValueError(f"Unknown decay_sampling mode: {self.config.decay_sampling}")
 
     def _generate_abundances(self, raman_spectrum: np.ndarray) -> np.ndarray:
         """
@@ -377,9 +585,11 @@ class SyntheticBleachingDataset:
         raman_peak = raman_spectrum.max()
         target_fluor_total = fr_ratio * raman_peak
 
-        # Sample raw abundances uniformly
-        raw_abundances = self.rng.uniform(
-            self.config.abundance_min, self.config.abundance_max, size=n_f
+        # Sample raw fluorophore weights (relative mixing ratios)
+        raw_weights = self.rng.uniform(
+            self.config.fluorophore_weight_min,
+            self.config.fluorophore_weight_max,
+            size=n_f
         )
 
         # Get bases (use shared or generate new)
@@ -390,16 +600,18 @@ class SyntheticBleachingDataset:
             # This will be handled in the main loop
             raise ValueError("Per-sample bases require wavenumber axis")
 
-        # Scale abundances to achieve target F/R ratio
+        # Scale weights to achieve target F/R ratio
         # Since bases are normalized to unit peak (max=1.0), use max for scaling
-        # fluorescence_total = sum(w_i * max(B_i))
+        # Total peak fluorescence = sum(weight_i * max(B_i)) where max(B_i) = 1.0
         basis_maxs = bases.max(axis=1)
-        current_total = np.sum(raw_abundances * basis_maxs)
+        current_total = np.sum(raw_weights * basis_maxs)
 
         if current_total > 0:
-            abundances = raw_abundances * (target_fluor_total / current_total)
+            # Scale weights to match target F/R ratio
+            # These are the final "abundances" but they're scaled from the relative weights
+            abundances = raw_weights * (target_fluor_total / current_total)
         else:
-            abundances = raw_abundances
+            abundances = raw_weights
 
         return abundances
 
@@ -700,6 +912,7 @@ class SyntheticBleachingDataset:
         )
 
         return ds
+
 
     def save(self, path: str):
         """Save dataset to NetCDF."""
