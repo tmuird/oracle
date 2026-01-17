@@ -6,7 +6,7 @@ from matplotlib.axes import Axes
 from dataclasses import dataclass
 import ramanspy as rp
 import xarray as xr
-from core import SpectralData, convert_to_spectral_data
+from ramanlib.core import SpectralData, convert_to_spectral_data
 
 
 def compare_spectra(
