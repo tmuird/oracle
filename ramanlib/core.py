@@ -36,30 +36,38 @@ class SpectralData:
 
     Acts as a lightweight wrapper that can interface with RamanSPy preprocessing
     while supporting per-sample wavenumber axes (unlike RamanSPy SpectralContainer).
+    Also supports time series data for bleaching experiments.
 
     Attributes
     ----------
     intensities : np.ndarray
-        Shape (n_samples, n_wavenumbers) - spectral intensities
+        Shape (n_samples, n_wavenumbers) for independent samples, or
+        Shape (n_timepoints, n_wavenumbers) for time series
     wavenumbers : np.ndarray
         Shape (n_wavenumbers,) for shared axis, or
         Shape (n_samples, n_wavenumbers) for per-sample axes
     label : str
         Optional label for this dataset
+    time_values : np.ndarray, optional
+        Shape (n_timepoints,) for time series data (e.g., bleaching experiments)
+        If provided, first dimension is treated as time rather than samples
 
     Examples
     --------
-    >>> # Create and preprocess
-    >>> data = SpectralData(intensities, wavenumbers, label='Raw')
+    >>> # Independent samples
+    >>> data = SpectralData(intensities, wavenumbers, label='Fluorophores')
     >>> processed = data.baseline_correction().normalize().crop(600, 1800)
     >>>
-    >>> # Plot comparison
-    >>> compare_spectra([data, processed], titles=['Raw', 'Processed'])
+    >>> # Time series (bleaching)
+    >>> data = SpectralData(Y_data, wavenumbers, time_values=t_values, label='Bleaching')
+    >>> subset = data[:40]  # First 40 time points
+    >>> result = decompose(subset)
     """
 
     intensities: np.ndarray
     wavenumbers: np.ndarray
     label: Optional[str] = None
+    time_values: Optional[np.ndarray] = None
 
     def get_spectrum(self, sample_idx: int) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -95,6 +103,79 @@ class SpectralData:
             return len(self.wavenumbers)
         else:
             return self.wavenumbers.shape[1]
+
+    @property
+    def is_time_series(self) -> bool:
+        """Check if this is time series data (has time_values)."""
+        return self.time_values is not None
+
+    @property
+    def n_timepoints(self) -> int:
+        """Number of time points (alias for n_samples when is_time_series)."""
+        return self.n_samples
+
+    def __getitem__(self, idx):
+        """
+        Support slicing and indexing for easy subsetting.
+
+        Enables natural slicing syntax for both samples and time series:
+        - data[0] → first sample/timepoint
+        - data[:40] → first 40 samples/timepoints
+        - data[10:50] → samples/timepoints 10-50
+        - data[[0, 5, 10]] → specific indices
+
+        Parameters
+        ----------
+        idx : int, slice, or array-like
+            Index or slice to extract
+
+        Returns
+        -------
+        SpectralData
+            New SpectralData with sliced data (uses views when possible)
+
+        Examples
+        --------
+        >>> # Time series slicing
+        >>> data = SpectralData(Y, wn, time_values=t, label='Bleaching')
+        >>> first_40 = data[:40]  # First 40 time points
+        >>> subset = data[10:50]  # Time points 10-50
+        >>>
+        >>> # Sample slicing
+        >>> fluor = SpectralData(intensities, wn, label='Fluorophores')
+        >>> first_5 = fluor[:5]  # First 5 fluorophores
+        """
+        # Handle integer, slice, or array indexing
+        new_intensities = self.intensities[idx]
+
+        # Ensure 2D output (n_samples/timepoints, n_wavenumbers)
+        if new_intensities.ndim == 1:
+            new_intensities = new_intensities[np.newaxis, :]
+
+        # Handle wavenumbers (shared or per-sample)
+        if self.wavenumbers.ndim == 1:
+            new_wavenumbers = self.wavenumbers  # Shared axis, no slicing needed
+        else:
+            new_wavenumbers = self.wavenumbers[idx]
+            if new_wavenumbers.ndim == 1:
+                new_wavenumbers = new_wavenumbers[np.newaxis, :]
+
+        # Handle time_values if present
+        new_time_values = None
+        if self.time_values is not None:
+            new_time_values = self.time_values[idx]
+            # Ensure 1D array
+            if isinstance(new_time_values, (int, float, np.number)):
+                new_time_values = np.array([new_time_values])
+            elif new_time_values.ndim == 0:
+                new_time_values = np.array([new_time_values.item()])
+
+        return SpectralData(
+            intensities=new_intensities,
+            wavenumbers=new_wavenumbers,
+            label=self.label,
+            time_values=new_time_values,
+        )
 
     def to_ramanspy(self):
         """
@@ -148,6 +229,7 @@ class SpectralData:
                 intensities=processed.spectral_data,
                 wavenumbers=processed.spectral_axis,
                 label=f"{self.label or 'data'} (preprocessed)",
+                time_values=self.time_values,
             )
         else:
             # Per-sample axes - process individually
@@ -162,6 +244,7 @@ class SpectralData:
                 intensities=np.array(processed_intensities),
                 wavenumbers=self.wavenumbers,
                 label=f"{self.label or 'data'} (preprocessed)",
+                time_values=self.time_values,
             )
 
     def baseline_correction(self, method="iarpls", **kwargs) -> "SpectralData":
@@ -273,6 +356,7 @@ class SpectralData:
                 intensities=self.intensities[:, mask],
                 wavenumbers=self.wavenumbers[mask],
                 label=f"{self.label or 'data'} (cropped)",
+                time_values=self.time_values,
             )
         else:
             # Per-sample axes
@@ -288,6 +372,7 @@ class SpectralData:
                 intensities=np.array(cropped_intensities),
                 wavenumbers=np.array(cropped_wavenumbers),
                 label=f"{self.label or 'data'} (cropped)",
+                time_values=self.time_values,
             )
 
     def copy(self) -> "SpectralData":
@@ -296,6 +381,7 @@ class SpectralData:
             intensities=self.intensities.copy(),
             wavenumbers=self.wavenumbers.copy(),
             label=self.label,
+            time_values=self.time_values.copy() if self.time_values is not None else None,
         )
 
     def normalize_for_plotting(self, method="l2") -> "SpectralData":
@@ -352,6 +438,7 @@ class SpectralData:
             intensities=normalized,
             wavenumbers=self.wavenumbers,
             label=f"{self.label or 'data'} ({method}-norm)",
+            time_values=self.time_values,
         )
 
 

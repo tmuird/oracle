@@ -37,6 +37,7 @@ from ramanlib.bleaching.fluorophores import (
     FluorophoreLoader,
     load_fluorophores,
     filter_bad_fluorophores,
+    generate_synthetic_fluorophores,
     nm_to_wavenumber,
     wavenumber_to_nm,
 )
@@ -44,22 +45,23 @@ from ramanlib.bleaching.fluorophores import (
 from ramanlib.bleaching.models import (
     PhysicsDecomposition,
     fit_physics_model,
-    get_default_loss_weights,
+    # get_default_loss_weights,  # Commented out in models.py
 )
 
-from ramanlib.bleaching.losses import (
-    compute_spectral_separation_loss,
-    compute_abundance_penalty,
-    compute_decay_diversity_penalty,
-    compute_intensity_ratio_loss,
-    compute_late_time_consistency_loss,
-    compute_raman_floor_loss,
-    compute_raman_spikiness_loss,
-    compute_raman_curvature_loss,
-    compute_fluorophore_convexity_loss,
-    compute_decay_rate_prior_loss,
-    compute_extrapolation_validation_loss,
-)
+# Losses are commented out in losses.py
+# from ramanlib.bleaching.losses import (
+#     compute_spectral_separation_loss,
+#     compute_abundance_penalty,
+#     compute_decay_diversity_penalty,
+#     compute_intensity_ratio_loss,
+#     compute_late_time_consistency_loss,
+#     compute_raman_floor_loss,
+#     compute_raman_spikiness_loss,
+#     compute_raman_curvature_loss,
+#     compute_fluorophore_convexity_loss,
+#     compute_decay_rate_prior_loss,
+#     compute_extrapolation_validation_loss,
+# )
 
 from ramanlib.bleaching.visualize import (
     plot_decomposition,
@@ -84,19 +86,19 @@ __all__ = [
     # NN Model
     "PhysicsDecomposition",
     "fit_physics_model",
-    "get_default_loss_weights",
-    # Loss functions
-    "compute_spectral_separation_loss",
-    "compute_abundance_penalty",
-    "compute_decay_diversity_penalty",
-    "compute_intensity_ratio_loss",
-    "compute_late_time_consistency_loss",
-    "compute_raman_floor_loss",
-    "compute_raman_spikiness_loss",
-    "compute_raman_curvature_loss",
-    "compute_fluorophore_convexity_loss",
-    "compute_decay_rate_prior_loss",
-    "compute_extrapolation_validation_loss",
+    # "get_default_loss_weights",  # Commented out in models.py
+    # Loss functions - commented out in losses.py
+    # "compute_spectral_separation_loss",
+    # "compute_abundance_penalty",
+    # "compute_decay_diversity_penalty",
+    # "compute_intensity_ratio_loss",
+    # "compute_late_time_consistency_loss",
+    # "compute_raman_floor_loss",
+    # "compute_raman_spikiness_loss",
+    # "compute_raman_curvature_loss",
+    # "compute_fluorophore_convexity_loss",
+    # "compute_decay_rate_prior_loss",
+    # "compute_extrapolation_validation_loss",
     # Generation
     "SyntheticConfig",
     "SyntheticBleachingDataset",
@@ -104,11 +106,11 @@ __all__ = [
     "FluorophoreLoader",
     "load_fluorophores",
     "filter_bad_fluorophores",
+    "generate_synthetic_fluorophores",
     "nm_to_wavenumber",
     "wavenumber_to_nm",
     # Visualization
     "plot_decomposition",
     "plot_temporal_decomposition",
-    "plot_stacked_decomposition",
     "get_full_decomposition",
 ]

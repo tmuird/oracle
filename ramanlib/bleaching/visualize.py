@@ -75,12 +75,13 @@ from matplotlib.figure import Figure
 
 
 def visualise_decomposition(
-    data: np.ndarray,
+    data,  # Union[np.ndarray, SpectralData]
     decomposition: Dict[str, np.ndarray],
     reconstruction: Optional[np.ndarray] = None,
     time_values: Optional[np.ndarray] = None,
     wavenumbers: Optional[np.ndarray] = None,
     reference_raman: Optional[np.ndarray] = None,
+    normalise: bool = False,
     figsize: Tuple[int, int] = (16, 10),
 ):
     """
@@ -90,24 +91,47 @@ def visualise_decomposition(
     both PhysicsDecomposition.get_decomposition() and the DE-based decompose().
 
     Args:
-        data: Original time series (n_timepoints, n_wavenumbers)
+        data: Original time series
+            - If np.ndarray: shape (n_timepoints, n_wavenumbers)
+            - If SpectralData: Must have time_values set
         decomposition: Dictionary with keys:
-            - 'raman': Extracted Raman spectrum (n_wavenumbers,)
-            - 'fluorophore_bases': Fluorophore bases (n_fluorophores, n_wavenumbers)
+            - 'raman': Extracted Raman spectrum (SpectralData or np.ndarray)
+            - 'fluorophore_bases': Fluorophore bases (SpectralData or np.ndarray)
             - 'abundances': Abundances (n_fluorophores,)
             - 'rates' or 'decay_rates': Decay rates (n_fluorophores,)
         reconstruction: Reconstructed time series (n_timepoints, n_wavenumbers).
             If None, computed from decomposition parameters.
-        time_values: Time axis in seconds. If None, uses frame indices.
-        wavenumbers: Wavenumber axis. If None, uses indices.
+        time_values: Time axis in seconds. If None, extracted from data or uses frame indices.
+        wavenumbers: Wavenumber axis. If None, extracted from data or uses indices.
         reference_raman: Ground truth Raman for comparison. If None, uses
             last 20 frames average.
+        normalise: Normalize spectra for visualization
         figsize: Figure size tuple.
 
     Returns:
         Tuple of (figure, axes)
+
+    Examples:
+        # Old way (still works)
+        visualise_decomposition(Y_array, decomposition, time_values=t, wavenumbers=wn)
+
+        # New way (cleaner)
+        data = SpectralData(Y_array, wn, time_values=t)
+        visualise_decomposition(data, decomposition)
     """
-    n_t, n_wn = data.shape
+    from ramanlib.core import SpectralData
+
+    # Extract arrays from SpectralData if provided
+    if isinstance(data, SpectralData):
+        Y = data.intensities
+        if time_values is None:
+            time_values = data.time_values
+        if wavenumbers is None:
+            wavenumbers = data.wavenumbers
+    else:
+        Y = data
+
+    n_t, n_wn = Y.shape
 
     # Handle optional axes
     if time_values is None:
@@ -115,13 +139,27 @@ def visualise_decomposition(
     if wavenumbers is None:
         wavenumbers = np.arange(n_wn)
 
-    # Extract decomposition parameters
-    raman = decomposition["raman"]
-    bases = decomposition.get("fluorophore_bases", decomposition.get("bases"))
+    # Extract decomposition parameters (handle both SpectralData and np.ndarray)
+    from ramanlib.core import SpectralData
+
+    raman_obj = decomposition["raman"]
+    bases_obj = decomposition.get("fluorophore_bases", decomposition.get("bases"))
+
+    # Extract intensities (support both SpectralData and np.ndarray)
+    if isinstance(raman_obj, SpectralData):
+        raman = raman_obj.intensities
+    else:
+        raman = raman_obj
+
+    if isinstance(bases_obj, SpectralData):
+        bases = bases_obj.intensities
+    else:
+        bases = bases_obj
+
     abundances = decomposition["abundances"]
     rates = decomposition.get("rates", decomposition.get("decay_rates"))
     time_constants = 1.0 / rates
-
+    
     n_fluorophores = len(rates)
 
     # Compute reconstruction if not provided
@@ -135,7 +173,7 @@ def visualise_decomposition(
 
     # Reference Raman
     if reference_raman is None:
-        reference_raman = data[-20:].mean(axis=0)
+        reference_raman = Y[-20:].mean(axis=0)
         ref_label = "Reference (last 20 frames avg)"
     else:
         ref_label = "Ground Truth Raman"
@@ -147,7 +185,7 @@ def visualise_decomposition(
     n_show = min(8, n_t)
     cmap = plt.cm.viridis
     for i, idx in enumerate(np.linspace(0, n_t - 1, n_show, dtype=int)):
-        ax.plot(wavenumbers, data[idx], color=cmap(i / n_show), alpha=0.7)
+        ax.plot(wavenumbers, Y[idx], color=cmap(i / n_show), alpha=0.7)
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity")
     ax.set_title("Original Time Series")
@@ -206,7 +244,7 @@ def visualise_decomposition(
 
     # Plot 5: Reconstruction quality (first frame)
     ax = axes[1, 1]
-    ax.plot(wavenumbers, data[0], "b-", alpha=0.7, label="Original (t=0)")
+    ax.plot(wavenumbers, Y[0], "b-", alpha=0.7, label="Original (t=0)")
     ax.plot(wavenumbers, reconstruction[0], "r--", alpha=0.7, label="Reconstructed")
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity")
@@ -216,7 +254,7 @@ def visualise_decomposition(
 
     # Plot 6: Residual over time
     ax = axes[1, 2]
-    residuals = data - reconstruction
+    residuals = Y - reconstruction
     ax.plot(time_values, np.mean(residuals, axis=1), "k-", label="Mean")
     ax.fill_between(
         time_values,
@@ -614,7 +652,7 @@ def plot_temporal_decomposition(
 
 
 def visualize_decomposition_3d(
-    data: np.ndarray,
+    data,  # Union[np.ndarray, SpectralData]
     decomposition: dict,
     reconstruction: "Optional[np.ndarray]" = None,
     time_values: "Optional[np.ndarray]" = None,
@@ -626,15 +664,17 @@ def visualize_decomposition_3d(
     Interactive 3D visualisation using plotly (allows rotation/zoom).
 
     Args:
-        data: Original time series (n_timepoints, n_wavenumbers)
+        data: Original time series. Can be:
+            - np.ndarray of shape (n_timepoints, n_wavenumbers)
+            - SpectralData object with time_values
         decomposition: Dictionary with keys:
-            - 'raman': Extracted Raman spectrum (n_wavenumbers,)
-            - 'fluorophore_bases': Fluorophore bases (n_fluorophores, n_wavenumbers)
+            - 'raman': Extracted Raman spectrum (n_wavenumbers,) or SpectralData
+            - 'fluorophore_bases': Fluorophore bases (n_fluorophores, n_wavenumbers) or SpectralData
             - 'abundances': Abundances (n_fluorophores,)
             - 'rates' or 'decay_rates': Decay rates (n_fluorophores,)
         reconstruction: Reconstructed time series. If None, computed from decomposition.
-        time_values: Time axis in seconds. If None, uses frame indices.
-        wavenumbers: Wavenumber axis. If None, uses indices.
+        time_values: Time axis in seconds. If None, extracted from data or uses frame indices.
+        wavenumbers: Wavenumber axis. If None, extracted from data or uses indices.
         subsample_wn: Subsample factor for wavenumber axis
         subsample_time: Subsample factor for time axis
 
@@ -642,8 +682,19 @@ def visualize_decomposition_3d(
         Plotly figure object
     """
     import plotly.graph_objects as go
+    from ramanlib.core import SpectralData
 
-    n_t, n_wn = data.shape
+    # Extract arrays from SpectralData if provided
+    if isinstance(data, SpectralData):
+        Y = data.intensities
+        if time_values is None:
+            time_values = data.time_values
+        if wavenumbers is None:
+            wavenumbers = data.wavenumbers
+    else:
+        Y = data
+
+    n_t, n_wn = Y.shape
 
     # Handle optional axes
     if time_values is None:
@@ -652,10 +703,23 @@ def visualize_decomposition_3d(
         wavenumbers = np.arange(n_wn)
 
     # Extract decomposition parameters
-    raman = decomposition["raman"]
-    bases = decomposition.get("fluorophore_bases", decomposition.get("bases"))
+    raman_obj = decomposition["raman"]
+    bases_obj = decomposition.get("fluorophore_bases", decomposition.get("bases"))
     abundances = decomposition["abundances"]
     rates = decomposition.get("rates", decomposition.get("decay_rates"))
+
+    # Extract intensities (support both SpectralData and np.ndarray)
+    from ramanlib.core import SpectralData
+    if isinstance(raman_obj, SpectralData):
+        raman = raman_obj.intensities
+    else:
+        raman = raman_obj
+
+    if isinstance(bases_obj, SpectralData):
+        bases = bases_obj.intensities
+    else:
+        bases = bases_obj
+
     n_fluorophores = len(rates)
 
     # Compute reconstruction if not provided
@@ -668,7 +732,7 @@ def visualize_decomposition_3d(
             )
 
     # Compute total fluorescence
-    total_fluor = np.zeros_like(data)
+    total_fluor = np.zeros_like(Y)
     if bases is not None:
         for i in range(n_fluorophores):
             decay = np.exp(-rates[i] * time_values)
@@ -689,7 +753,7 @@ def visualize_decomposition_3d(
         go.Surface(
             x=wn_sub,
             y=t_sub,
-            z=data[np.ix_(t_idx, wn_idx)],
+            z=Y[np.ix_(t_idx, wn_idx)],
             colorscale="Viridis",
             name="Original",
             visible=True,
@@ -710,7 +774,7 @@ def visualize_decomposition_3d(
     )
 
     # Residual
-    residual = data - reconstruction
+    residual = Y - reconstruction
     fig.add_trace(
         go.Surface(
             x=wn_sub,

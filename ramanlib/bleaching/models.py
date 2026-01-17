@@ -23,7 +23,6 @@ from ramanlib.bleaching.physics import (
     l2_normalize_torch,
     reconstruct_time_series_torch,
 )
-from ramanlib.bleaching import losses
 
 
 class PhysicsDecomposition(nn.Module):
@@ -97,10 +96,16 @@ class PhysicsDecomposition(nn.Module):
                 self.poly_coeffs = nn.Parameter(poly_tensor)
             elif initial_fluorophore_bases is not None:
                 assert wavenumber_axis is not None
-                wn_np = wavenumber_axis.cpu().numpy() if isinstance(
-                    wavenumber_axis, torch.Tensor) else wavenumber_axis
-                bases_np = initial_fluorophore_bases.cpu().numpy() if isinstance(
-                    initial_fluorophore_bases, torch.Tensor) else initial_fluorophore_bases
+                wn_np = (
+                    wavenumber_axis.cpu().numpy()
+                    if isinstance(wavenumber_axis, torch.Tensor)
+                    else wavenumber_axis
+                )
+                bases_np = (
+                    initial_fluorophore_bases.cpu().numpy()
+                    if isinstance(initial_fluorophore_bases, torch.Tensor)
+                    else initial_fluorophore_bases
+                )
                 coeffs, _, _ = fit_polynomial_bases(bases_np, wn_np, polynomial_degree)
                 self.poly_coeffs = nn.Parameter(
                     torch.tensor(coeffs, dtype=torch.float32, device=device)
@@ -112,9 +117,13 @@ class PhysicsDecomposition(nn.Module):
 
             # Normalized wavenumber axis
             if wavenumber_axis is not None:
-                wn = wavenumber_axis.to(device) if isinstance(
-                    wavenumber_axis, torch.Tensor) else torch.tensor(
-                    wavenumber_axis, dtype=torch.float32, device=device)
+                wn = (
+                    wavenumber_axis.to(device)
+                    if isinstance(wavenumber_axis, torch.Tensor)
+                    else torch.tensor(
+                        wavenumber_axis, dtype=torch.float32, device=device
+                    )
+                )
             else:
                 wn = torch.arange(n_wavenumbers, dtype=torch.float32, device=device)
 
@@ -218,98 +227,99 @@ class PhysicsDecomposition(nn.Module):
             component = decay.unsqueeze(1) * amplitude * basis.unsqueeze(0)
             return component.cpu().numpy()
 
-    # Physics loss functions
-    def compute_spectral_separation_loss(self) -> torch.Tensor:
-        """Enforce spectral separation: fluorescence smooth, Raman sharp."""
-        return losses.compute_spectral_separation_loss(
-            self.fluorophore_bases,
-            self.raman_spectra,
-        )
 
-    def compute_abundance_penalty(self) -> torch.Tensor:
-        """Penalize very large abundances."""
-        return losses.compute_abundance_penalty(self.abundances_raw)
+#     # Physics loss functions
+#     def compute_spectral_separation_loss(self) -> torch.Tensor:
+#         """Enforce spectral separation: fluorescence smooth, Raman sharp."""
+#         return losses.compute_spectral_separation_loss(
+#             self.fluorophore_bases,
+#             self.raman_spectra,
+#         )
 
-    def compute_decay_diversity_penalty(self) -> torch.Tensor:
-        """Penalize clustered decay rates."""
-        return losses.compute_decay_diversity_penalty(self.decay_rates)
+#     def compute_abundance_penalty(self) -> torch.Tensor:
+#         """Penalize very large abundances."""
+#         return losses.compute_abundance_penalty(self.abundances_raw)
 
-    def compute_intensity_ratio_loss(self, t_early: float = 0.0) -> torch.Tensor:
-        """Enforce fluorescence >> Raman at early times."""
-        return losses.compute_intensity_ratio_loss(
-            self.fluorophore_bases,
-            self.abundances,
-            self.decay_rates,
-            self.raman_spectra,
-            t_early=t_early,
-        )
+#     def compute_decay_diversity_penalty(self) -> torch.Tensor:
+#         """Penalize clustered decay rates."""
+#         return losses.compute_decay_diversity_penalty(self.decay_rates)
 
-    def compute_late_time_consistency_loss(
-        self, t1: float = 20.0, t2: float = 25.0
-    ) -> torch.Tensor:
-        """Penalize inconsistent late-time predictions."""
-        return losses.compute_late_time_consistency_loss(
-            self.fluorophore_bases,
-            self.abundances,
-            self.decay_rates,
-            self.raman_spectra,
-            t1=t1,
-            t2=t2,
-        )
+#     def compute_intensity_ratio_loss(self, t_early: float = 0.0) -> torch.Tensor:
+#         """Enforce fluorescence >> Raman at early times."""
+#         return losses.compute_intensity_ratio_loss(
+#             self.fluorophore_bases,
+#             self.abundances,
+#             self.decay_rates,
+#             self.raman_spectra,
+#             t_early=t_early,
+#         )
 
-    def compute_raman_floor_loss(self) -> torch.Tensor:
-        """Penalize elevated Raman baseline."""
-        return losses.compute_raman_floor_loss(self.raman_spectra)
+#     def compute_late_time_consistency_loss(
+#         self, t1: float = 20.0, t2: float = 25.0
+#     ) -> torch.Tensor:
+#         """Penalize inconsistent late-time predictions."""
+#         return losses.compute_late_time_consistency_loss(
+#             self.fluorophore_bases,
+#             self.abundances,
+#             self.decay_rates,
+#             self.raman_spectra,
+#             t1=t1,
+#             t2=t2,
+#         )
 
-    def compute_raman_spikiness_loss(self) -> torch.Tensor:
-        """Penalize overly smooth Raman spectrum."""
-        return losses.compute_raman_spikiness_loss(self.raman_spectra)
+#     def compute_raman_floor_loss(self) -> torch.Tensor:
+#         """Penalize elevated Raman baseline."""
+#         return losses.compute_raman_floor_loss(self.raman_spectra)
 
-    def compute_raman_curvature_loss(self) -> torch.Tensor:
-        """Penalize banana-shaped Raman spectrum."""
-        return losses.compute_raman_curvature_loss(self.raman_spectra)
+#     def compute_raman_spikiness_loss(self) -> torch.Tensor:
+#         """Penalize overly smooth Raman spectrum."""
+#         return losses.compute_raman_spikiness_loss(self.raman_spectra)
 
-    def compute_fluorophore_convexity_loss(self) -> torch.Tensor:
-        """Penalize U-shaped fluorophore bases."""
-        return losses.compute_fluorophore_convexity_loss(self.fluorophore_bases)
+#     def compute_raman_curvature_loss(self) -> torch.Tensor:
+#         """Penalize banana-shaped Raman spectrum."""
+#         return losses.compute_raman_curvature_loss(self.raman_spectra)
 
-    def compute_decay_rate_prior_loss(self, target_rates: torch.Tensor) -> torch.Tensor:
-        """Soft regularization toward estimated decay rates."""
-        return losses.compute_decay_rate_prior_loss(self.decay_rates, target_rates)
+#     def compute_fluorophore_convexity_loss(self) -> torch.Tensor:
+#         """Penalize U-shaped fluorophore bases."""
+#         return losses.compute_fluorophore_convexity_loss(self.fluorophore_bases)
 
-    def compute_extrapolation_validation_loss(
-        self,
-        data: torch.Tensor,
-        first_times: int,
-        fit_frames: int = 10,
-        val_frames: int = 10,
-    ) -> torch.Tensor:
-        """Internal cross-validation within training window."""
-        reconstruction = self.forward()
-        return losses.compute_extrapolation_validation_loss(
-            reconstruction,
-            data,
-            first_times,
-            fit_frames=fit_frames,
-            val_frames=val_frames,
-        )
+#     def compute_decay_rate_prior_loss(self, target_rates: torch.Tensor) -> torch.Tensor:
+#         """Soft regularization toward estimated decay rates."""
+#         return losses.compute_decay_rate_prior_loss(self.decay_rates, target_rates)
+
+#     def compute_extrapolation_validation_loss(
+#         self,
+#         data: torch.Tensor,
+#         first_times: int,
+#         fit_frames: int = 10,
+#         val_frames: int = 10,
+#     ) -> torch.Tensor:
+#         """Internal cross-validation within training window."""
+#         reconstruction = self.forward()
+#         return losses.compute_extrapolation_validation_loss(
+#             reconstruction,
+#             data,
+#             first_times,
+#             fit_frames=fit_frames,
+#             val_frames=val_frames,
+#         )
 
 
-def get_default_loss_weights() -> Dict[str, float]:
-    """Get default weights for physics-based loss functions."""
-    return {
-        'spectral_separation': 1.0,
-        'abundance': 0.1,
-        'decay_diversity': 0.5,
-        'intensity_ratio': 0.5,
-        'late_time_consistency': 0.2,
-        'raman_floor': 0.3,
-        'raman_spikiness': 0.4,
-        'raman_curvature': 0.3,
-        'fluorophore_convexity': 0.5,
-        'decay_rate_prior': 0.1,
-        'extrapolation_validation': 0.2,
-    }
+# def get_default_loss_weights() -> Dict[str, float]:
+#     """Get default weights for physics-based loss functions."""
+#     return {
+#         'spectral_separation': 1.0,
+#         'abundance': 0.1,
+#         'decay_diversity': 0.5,
+#         'intensity_ratio': 0.5,
+#         'late_time_consistency': 0.2,
+#         'raman_floor': 0.3,
+#         'raman_spikiness': 0.4,
+#         'raman_curvature': 0.3,
+#         'fluorophore_convexity': 0.5,
+#         'decay_rate_prior': 0.1,
+#         'extrapolation_validation': 0.2,
+#     }
 
 
 def fit_physics_model(
@@ -321,7 +331,7 @@ def fit_physics_model(
     first_times: Optional[int] = None,
     verbose: bool = True,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
-    use_physics_losses: bool = False,
+    # use_physics_losses: bool = False,
     loss_weights: Optional[Dict[str, float]] = None,
     target_decay_rates: Optional[np.ndarray] = None,
     **model_kwargs,
@@ -393,18 +403,18 @@ def fit_physics_model(
 
     # Initialize history
     history = {"loss": [], "mse": []}
-    if use_physics_losses:
-        weights = loss_weights or get_default_loss_weights()
-        # Add keys for each physics loss
-        for key in weights.keys():
-            history[key] = []
+    # if use_physics_losses:
+    #     weights = loss_weights or get_default_loss_weights()
+    #     # Add keys for each physics loss
+    #     for key in weights.keys():
+    #         history[key] = []
 
-        # Convert target decay rates to tensor if provided
-        target_rates_tensor = None
-        if target_decay_rates is not None:
-            target_rates_tensor = torch.tensor(
-                target_decay_rates, dtype=torch.float32, device=device
-            )
+    #     # Convert target decay rates to tensor if provided
+    #     target_rates_tensor = None
+    #     if target_decay_rates is not None:
+    #         target_rates_tensor = torch.tensor(
+    #             target_decay_rates, dtype=torch.float32, device=device
+    #         )
 
     for epoch in range(n_epochs):
         optimizer.zero_grad()
@@ -416,71 +426,71 @@ def fit_physics_model(
         )
         total_loss = mse_loss
 
-        # Add physics losses if enabled
-        if use_physics_losses:
-            physics_loss_values = {}
+        # # Add physics losses if enabled
+        # if use_physics_losses:
+        #     physics_loss_values = {}
 
-            # Spectral separation
-            loss_val = model.compute_spectral_separation_loss()
-            physics_loss_values['spectral_separation'] = loss_val.item()
-            total_loss += weights['spectral_separation'] * loss_val
+        #     # Spectral separation
+        #     loss_val = model.compute_spectral_separation_loss()
+        #     physics_loss_values['spectral_separation'] = loss_val.item()
+        #     total_loss += weights['spectral_separation'] * loss_val
 
-            # Abundance penalty
-            loss_val = model.compute_abundance_penalty()
-            physics_loss_values['abundance'] = loss_val.item()
-            total_loss += weights['abundance'] * loss_val
+        #     # Abundance penalty
+        #     loss_val = model.compute_abundance_penalty()
+        #     physics_loss_values['abundance'] = loss_val.item()
+        #     total_loss += weights['abundance'] * loss_val
 
-            # Decay diversity
-            loss_val = model.compute_decay_diversity_penalty()
-            physics_loss_values['decay_diversity'] = loss_val.item()
-            total_loss += weights['decay_diversity'] * loss_val
+        #     # Decay diversity
+        #     loss_val = model.compute_decay_diversity_penalty()
+        #     physics_loss_values['decay_diversity'] = loss_val.item()
+        #     total_loss += weights['decay_diversity'] * loss_val
 
-            # Intensity ratio
-            loss_val = model.compute_intensity_ratio_loss()
-            physics_loss_values['intensity_ratio'] = loss_val.item()
-            total_loss += weights['intensity_ratio'] * loss_val
+        #     # Intensity ratio
+        #     loss_val = model.compute_intensity_ratio_loss()
+        #     physics_loss_values['intensity_ratio'] = loss_val.item()
+        #     total_loss += weights['intensity_ratio'] * loss_val
 
-            # Late time consistency
-            loss_val = model.compute_late_time_consistency_loss()
-            physics_loss_values['late_time_consistency'] = loss_val.item()
-            total_loss += weights['late_time_consistency'] * loss_val
+        #     # Late time consistency
+        #     loss_val = model.compute_late_time_consistency_loss()
+        #     physics_loss_values['late_time_consistency'] = loss_val.item()
+        #     total_loss += weights['late_time_consistency'] * loss_val
 
-            # Raman floor
-            loss_val = model.compute_raman_floor_loss()
-            physics_loss_values['raman_floor'] = loss_val.item()
-            total_loss += weights['raman_floor'] * loss_val
+        #     # Raman floor
+        #     loss_val = model.compute_raman_floor_loss()
+        #     physics_loss_values['raman_floor'] = loss_val.item()
+        #     total_loss += weights['raman_floor'] * loss_val
 
-            # Raman spikiness
-            loss_val = model.compute_raman_spikiness_loss()
-            physics_loss_values['raman_spikiness'] = loss_val.item()
-            total_loss += weights['raman_spikiness'] * loss_val
+        #     # Raman spikiness
+        #     loss_val = model.compute_raman_spikiness_loss()
+        #     physics_loss_values['raman_spikiness'] = loss_val.item()
+        #     total_loss += weights['raman_spikiness'] * loss_val
 
-            # Raman curvature
-            loss_val = model.compute_raman_curvature_loss()
-            physics_loss_values['raman_curvature'] = loss_val.item()
-            total_loss += weights['raman_curvature'] * loss_val
+        #     # Raman curvature
+        #     loss_val = model.compute_raman_curvature_loss()
+        #     physics_loss_values['raman_curvature'] = loss_val.item()
+        #     total_loss += weights['raman_curvature'] * loss_val
 
-            # Fluorophore convexity
-            loss_val = model.compute_fluorophore_convexity_loss()
-            physics_loss_values['fluorophore_convexity'] = loss_val.item()
-            total_loss += weights['fluorophore_convexity'] * loss_val
+        #     # Fluorophore convexity
+        #     loss_val = model.compute_fluorophore_convexity_loss()
+        #     physics_loss_values['fluorophore_convexity'] = loss_val.item()
+        #     total_loss += weights['fluorophore_convexity'] * loss_val
 
-            # Decay rate prior (if target rates provided)
-            if target_rates_tensor is not None:
-                loss_val = model.compute_decay_rate_prior_loss(target_rates_tensor)
-                physics_loss_values['decay_rate_prior'] = loss_val.item()
-                total_loss += weights['decay_rate_prior'] * loss_val
+        #     # Decay rate prior (if target rates provided)
+        #     if target_rates_tensor is not None:
+        #         loss_val = model.compute_decay_rate_prior_loss(target_rates_tensor)
+        #         physics_loss_values['decay_rate_prior'] = loss_val.item()
+        #         total_loss += weights['decay_rate_prior'] * loss_val
 
-            # Extrapolation validation
-            loss_val = model.compute_extrapolation_validation_loss(
-                data_tensor, first_times
-            )
-            physics_loss_values['extrapolation_validation'] = loss_val.item()
-            total_loss += weights['extrapolation_validation'] * loss_val
+        #     # Extrapolation validation
+        #     loss_val = model.compute_extrapolation_validation_loss(
+        #         data_tensor, first_times
+        #     )
+        #     physics_loss_values['extrapolation_validation'] = loss_val.item()
+        #     total_loss += weights['extrapolation_validation'] * loss_val
 
-            # Record all losses
-            for key, val in physics_loss_values.items():
-                history[key].append(val)
+        #     # Record all losses
+        #     for key, val in physics_loss_values.items():
+        #         history[key].append(val)
 
         history["mse"].append(mse_loss.item())
         history["loss"].append(total_loss.item())
@@ -490,10 +500,10 @@ def fit_physics_model(
 
         if verbose and (epoch + 1) % 1000 == 0:
             tau = (1.0 / model.decay_rates).detach().cpu().numpy()
-            if use_physics_losses:
-                print(f"Epoch {epoch + 1}/{n_epochs}: total_loss={total_loss.item():.6f}, mse={mse_loss.item():.6f}, τ={tau}")
-            else:
-                print(f"Epoch {epoch + 1}/{n_epochs}: loss={mse_loss.item():.6f}, τ={tau}")
+            # if use_physics_losses:
+            #     print(f"Epoch {epoch + 1}/{n_epochs}: total_loss={total_loss.item():.6f}, mse={mse_loss.item():.6f}, τ={tau}")
+            # else:
+            print(f"Epoch {epoch + 1}/{n_epochs}: loss={mse_loss.item():.6f}, τ={tau}")
 
     # Rescale back
     with torch.no_grad():

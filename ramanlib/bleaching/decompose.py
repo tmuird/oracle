@@ -12,34 +12,45 @@ import numpy as np
 from scipy.optimize import differential_evolution, curve_fit
 from scipy.linalg import lstsq
 
+from ramanlib.core import SpectralData
+
 
 @dataclass
 class DecompositionResult:
     """Container for decomposition results."""
-    raman: np.ndarray              # (n_wavenumbers,)
-    rates: np.ndarray              # (n_fluorophores,)
-    fluorophore_spectra: np.ndarray  # (n_fluorophores, n_wavenumbers)
+
+    raman: SpectralData  # (n_wavenumbers,)
+    rates: np.ndarray  # (n_fluorophores,)
+    fluorophore_spectra: SpectralData  # (n_fluorophores, n_wavenumbers)
     mse: float = 0.0
-    
+
     @property
     def time_constants(self) -> np.ndarray:
         """Time constants τ = 1/λ."""
         return 1.0 / self.rates
-    
+
     def reconstruction(self, time_points: np.ndarray) -> np.ndarray:
         """Reconstruct Y(t, ν) from decomposition parameters."""
         decay = np.exp(-self.rates[:, None] * time_points[None, :])  # (K, T)
-        Y = self.raman[None, :] + decay.T @ self.fluorophore_spectra  # (T, W)
+        Y = (
+            self.raman.intensities[None, :]
+            + decay.T @ self.fluorophore_spectra.intensities
+        )  # (T, W)
         return Y
-    
+
     def to_dict(self) -> dict:
-        """Convert to dictionary for visualization functions."""
+        """
+        Convert to dictionary for visualization functions.
+
+        Returns SpectralData objects which contain both intensities and wavenumbers.
+        Visualization functions will extract what they need.
+        """
         return {
-            "raman": self.raman,
+            "raman": self.raman,  # SpectralData
             "rates": self.rates,
             "decay_rates": self.rates,
-            "fluorophore_bases": self.fluorophore_spectra,
-            "bases": self.fluorophore_spectra,
+            "fluorophore_bases": self.fluorophore_spectra,  # SpectralData
+            "bases": self.fluorophore_spectra,  # SpectralData
             "abundances": np.ones(len(self.rates)),  # Absorbed into spectra
             "time_constants": self.time_constants,
             "mse": self.mse,
@@ -47,11 +58,11 @@ class DecompositionResult:
 
 
 def solve_spectra_given_rates(
-    data: np.ndarray,
+    data: SpectralData,
     time_values: np.ndarray,
     decay_rates: np.ndarray,
     non_negative: bool = True,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[SpectralData, SpectralData]:
     """
     Solve for Raman and fluorescence spectra given fixed decay rates.
 
@@ -80,30 +91,31 @@ def solve_spectra_given_rates(
     fluorescence : np.ndarray
         Fluorescence contributions Cₖ(ν), shape (n_components, n_wavenumbers)
     """
-    n_timepoints, n_wavenumbers = data.shape
+    n_timepoints, n_wavenumbers = data.intensities.shape
     n_components = len(decay_rates)
-    
+
     # Design matrix: [1, exp(-λ₁t), exp(-λ₂t), ...]
     X = np.ones((n_timepoints, 1 + n_components))
     for i, rate in enumerate(decay_rates):
         X[:, i + 1] = np.exp(-rate * time_values)
-    
+
     # Solve Y = X @ beta
-    beta, _, _, _ = lstsq(X, data, lapack_driver='gelsd')
-    
-    raman = beta[0, :]
-    fluorescence = beta[1:, :]
-    
+    beta, _, _, _ = lstsq(X, data.intensities, lapack_driver="gelsd")
+
+    raman = SpectralData(beta[0, :], data.wavenumbers)
+    fluorescence = SpectralData(beta[1:, :], data.wavenumbers)
+
     if non_negative:
-        raman = np.maximum(raman, 0)
-        fluorescence = np.maximum(fluorescence, 0)
-    
+        raman = SpectralData(np.maximum(raman.intensities, 0), data.wavenumbers)
+        fluorescence = SpectralData(np.maximum(fluorescence.intensities, 0), data.wavenumbers)
+
     return raman, fluorescence
 
 
 def decompose(
-    Y: np.ndarray,
-    time_points: np.ndarray,
+    data,  # Union[np.ndarray, SpectralData]
+    time_points: Optional[np.ndarray] = None,
+    wavenumbers: Optional[np.ndarray] = None,
     n_fluorophores: int = 2,
     rate_bounds: tuple = (0.01, 20),
     maxiter: int = 100,
@@ -113,16 +125,21 @@ def decompose(
 ) -> DecompositionResult:
     """
     Decompose Y(t, ν) into Raman + fluorescence with exponential decay.
-    
+
     Uses Differential Evolution for global rate optimization, then
     solves analytically for spectra given those rates.
-    
+
     Parameters
     ----------
-    Y : np.ndarray
-        Intensity array, shape (n_timepoints, n_wavenumbers)
-    time_points : np.ndarray
+    data : np.ndarray or SpectralData
+        If np.ndarray: Intensity array, shape (n_timepoints, n_wavenumbers)
+                      Requires time_points parameter
+        If SpectralData: Must have time_values set (is_time_series=True)
+    time_points : np.ndarray, optional
         Time values, shape (n_timepoints,)
+        Required if data is np.ndarray, ignored if data is SpectralData
+    wavenumbers : np.ndarray, optional
+        Wavenumber axis. Extracted from data if SpectralData
     n_fluorophores : int
         Number of decay components K
     rate_bounds : tuple
@@ -135,46 +152,82 @@ def decompose(
         Apply L-BFGS-B refinement after DE
     verbose : bool
         Print optimization progress
-    
+
     Returns
     -------
     DecompositionResult
         Contains raman, rates, fluorophore_spectra, mse
-    
+
+    Examples
+    --------
+    # Old way (still works)
+    >>> result = decompose(Y_array, time_points=t_array, wavenumbers=wn_array)
+
+    # New way (cleaner)
+    >>> data = SpectralData(Y_array, wn_array, time_values=t_array)
+    >>> result = decompose(data[:40])  # First 40 frames
+
     Notes
     -----
     Rate bounds of (0.01, 20) correspond to:
         τ_max = 1/0.01 = 100s (very slow decay)
         τ_min = 1/20 = 0.05s (fast decay)
     """
-    T, W = Y.shape
+    # Extract arrays from SpectralData if provided
+    if isinstance(data, SpectralData):
+        if not data.is_time_series:
+            raise ValueError(
+                "SpectralData must have time_values for decomposition. "
+                "Create with: SpectralData(Y, wn, time_values=t)"
+            )
+        spectral_data = data
+        t = data.time_values
+    else:
+        # Legacy numpy array input
+        if time_points is None:
+            raise ValueError(
+                "time_points required when data is np.ndarray. "
+                "Use decompose(data, time_points=t) or "
+                "decompose(SpectralData(data, wn, time_values=t))"
+            )
+        if wavenumbers is None:
+            wavenumbers = np.arange(data.shape[1])
+
+        spectral_data = SpectralData(
+            intensities=data,
+            wavenumbers=wavenumbers,
+            time_values=time_points
+        )
+        t = time_points
+
+    T, W = spectral_data.intensities.shape
     K = n_fluorophores
-    
+
     def solve_given_rates(rates):
-        raman, fluor = solve_spectra_given_rates(Y, time_points, rates)
-        decay = np.exp(-rates[:, None] * time_points[None, :])
-        Y_recon = raman[None, :] + decay.T @ fluor
-        mse = np.mean((Y - Y_recon) ** 2)
+        raman, fluor = solve_spectra_given_rates(spectral_data, t, rates)
+        decay = np.exp(-rates[:, None] * t[None, :])
+        Y_recon = raman.intensities[None, :] + decay.T @ fluor.intensities
+        mse = np.mean((spectral_data.intensities - Y_recon) ** 2)
         return raman, fluor, mse
-    
+
     def objective(rates):
         _, _, mse = solve_given_rates(rates)
         return mse
-    
+
     result = differential_evolution(
-        objective, 
+        objective,
         bounds=[rate_bounds] * K,
         maxiter=maxiter,
         seed=seed,
         polish=polish,
-        updating='deferred',
+        updating="deferred",
         workers=1,
         disp=verbose,
     )
-    
+
     best_rates = np.clip(result.x, rate_bounds[0], rate_bounds[1])
     raman, fluor, mse = solve_given_rates(best_rates)
-    
+
     return DecompositionResult(
         raman=raman,
         rates=best_rates,
@@ -190,9 +243,9 @@ def decompose_with_known_rates(
 ) -> DecompositionResult:
     """
     Decompose with known decay rates (analytical solution only).
-    
+
     Useful when rates are known from prior analysis or ground truth.
-    
+
     Parameters
     ----------
     Y : np.ndarray
@@ -201,7 +254,7 @@ def decompose_with_known_rates(
         Time values, shape (n_timepoints,)
     rates : np.ndarray
         Known decay rates, shape (n_fluorophores,)
-    
+
     Returns
     -------
     DecompositionResult
@@ -210,7 +263,7 @@ def decompose_with_known_rates(
     decay = np.exp(-rates[:, None] * time_points[None, :])
     Y_recon = raman[None, :] + decay.T @ fluor
     mse = np.mean((Y - Y_recon) ** 2)
-    
+
     return DecompositionResult(
         raman=raman,
         rates=rates,
