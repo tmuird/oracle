@@ -25,6 +25,7 @@ from ramanlib.bleaching.decompose import (
     decompose,
     solve_spectra_given_rates,
     decompose_with_known_rates,
+    estimate_decay_rates_from_early_frames,
 )
 
 from ramanlib.bleaching.generate import (
@@ -43,6 +44,21 @@ from ramanlib.bleaching.fluorophores import (
 from ramanlib.bleaching.models import (
     PhysicsDecomposition,
     fit_physics_model,
+    get_default_loss_weights,
+)
+
+from ramanlib.bleaching.losses import (
+    compute_spectral_separation_loss,
+    compute_abundance_penalty,
+    compute_decay_diversity_penalty,
+    compute_intensity_ratio_loss,
+    compute_late_time_consistency_loss,
+    compute_raman_floor_loss,
+    compute_raman_spikiness_loss,
+    compute_raman_curvature_loss,
+    compute_fluorophore_convexity_loss,
+    compute_decay_rate_prior_loss,
+    compute_extrapolation_validation_loss,
 )
 
 from ramanlib.bleaching.visualize import (
@@ -64,9 +80,23 @@ __all__ = [
     "decompose",
     "solve_spectra_given_rates",
     "decompose_with_known_rates",
+    "estimate_decay_rates_from_early_frames",
     # NN Model
     "PhysicsDecomposition",
     "fit_physics_model",
+    "get_default_loss_weights",
+    # Loss functions
+    "compute_spectral_separation_loss",
+    "compute_abundance_penalty",
+    "compute_decay_diversity_penalty",
+    "compute_intensity_ratio_loss",
+    "compute_late_time_consistency_loss",
+    "compute_raman_floor_loss",
+    "compute_raman_spikiness_loss",
+    "compute_raman_curvature_loss",
+    "compute_fluorophore_convexity_loss",
+    "compute_decay_rate_prior_loss",
+    "compute_extrapolation_validation_loss",
     # Generation
     "SyntheticConfig",
     "SyntheticBleachingDataset",

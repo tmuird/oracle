@@ -7,9 +7,9 @@ Implements:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 import numpy as np
-from scipy.optimize import differential_evolution
+from scipy.optimize import differential_evolution, curve_fit
 from scipy.linalg import lstsq
 
 
@@ -217,3 +217,120 @@ def decompose_with_known_rates(
         fluorophore_spectra=fluor,
         mse=mse,
     )
+
+
+def estimate_decay_rates_from_early_frames(
+    data: np.ndarray,
+    time_values: np.ndarray,
+    first_times: int,
+    n_components: int = 3,
+) -> Tuple[np.ndarray, Dict]:
+    """
+    Estimate decay rates by fitting exponentials to wavenumber-averaged signal.
+
+    Uses only the first `first_times` frames to avoid information leakage.
+    This provides a physics-informed prior for the neural network optimization.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Full time series, shape (n_timepoints, n_wavenumbers)
+    time_values : np.ndarray
+        Time axis in seconds
+    first_times : int
+        Number of early frames to use (training window)
+    n_components : int
+        Number of exponential components to fit
+
+    Returns
+    -------
+    decay_rates : np.ndarray
+        Estimated decay rates λ, shape (n_components,)
+    fit_info : dict
+        Dictionary with fit quality metrics and parameters
+    """
+    # Use only training frames
+    train_data = data[:first_times]
+    train_times = time_values[:first_times]
+
+    # Wavenumber-averaged decay curve (removes spectral structure)
+    avg_decay = train_data.mean(axis=1)
+
+    # Define exponential models
+    def single_exp(t, A, tau, offset):
+        return A * np.exp(-t / tau) + offset
+
+    def double_exp(t, A1, tau1, A2, tau2, offset):
+        return A1 * np.exp(-t / tau1) + A2 * np.exp(-t / tau2) + offset
+
+    def triple_exp(t, A1, tau1, A2, tau2, A3, tau3, offset):
+        return (
+            A1 * np.exp(-t / tau1)
+            + A2 * np.exp(-t / tau2)
+            + A3 * np.exp(-t / tau3)
+            + offset
+        )
+
+    # Select model based on n_components
+    if n_components == 1:
+        func = single_exp
+        amp_init = avg_decay[0] - avg_decay[-1]
+        p0 = [amp_init, 0.5, avg_decay[-1]]
+        bounds = ([0, 1e-4, -np.inf], [np.inf, 100, np.inf])
+    elif n_components == 2:
+        func = double_exp
+        amp_init = (avg_decay[0] - avg_decay[-1]) / 2
+        p0 = [amp_init, 0.1, amp_init, 1.0, avg_decay[-1]]
+        bounds = ([0, 1e-4, 0, 1e-4, -np.inf], [np.inf, 100, np.inf, 100, np.inf])
+    else:  # 3 components
+        func = triple_exp
+        amp_init = (avg_decay[0] - avg_decay[-1]) / 3
+        p0 = [amp_init, 0.05, amp_init, 0.3, amp_init, 2.0, avg_decay[-1]]
+        bounds = (
+            [0, 1e-4, 0, 1e-4, 0, 1e-4, -np.inf],
+            [np.inf, 100, np.inf, 100, np.inf, 100, np.inf],
+        )
+
+    try:
+        popt, pcov = curve_fit(
+            func, train_times, avg_decay, p0=p0, bounds=bounds, maxfev=10000
+        )
+
+        # Extract tau values and convert to decay rates (lambda = 1/tau)
+        if n_components == 1:
+            taus = np.array([popt[1]])
+        elif n_components == 2:
+            taus = np.array([popt[1], popt[3]])
+        else:
+            taus = np.array([popt[1], popt[3], popt[5]])
+
+        decay_rates = 1.0 / taus
+
+        # Compute fit quality on training data only
+        fitted = func(train_times, *popt)
+        residuals = avg_decay - fitted
+        ss_res = np.sum(residuals**2)
+        ss_tot = np.sum((avg_decay - avg_decay.mean()) ** 2)
+        r_squared = 1 - ss_res / ss_tot
+
+        fit_info = {
+            "success": True,
+            "r_squared": r_squared,
+            "taus": taus,
+            "decay_rates": decay_rates,
+            "popt": popt,
+            "residual_std": np.std(residuals),
+        }
+
+        return decay_rates, fit_info
+
+    except (RuntimeError, ValueError) as e:
+        # Fitting failed - return default reasonable values
+        default_taus = np.array([0.1, 0.5, 2.0])[:n_components]
+        fit_info = {
+            "success": False,
+            "error": str(e),
+            "taus": default_taus,
+            "decay_rates": 1.0 / default_taus,
+        }
+        return 1.0 / default_taus, fit_info

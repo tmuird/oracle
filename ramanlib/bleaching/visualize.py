@@ -1,7 +1,15 @@
+"""Visualization utilities for bleaching decomposition."""
+
+from typing import Optional, Dict
+import numpy as np
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+
+
 def visualize_data_3d(
     data: np.ndarray,
-    time_values: 'Optional[np.ndarray]' = None,
-    wavenumbers: 'Optional[np.ndarray]' = None,
+    time_values: Optional[np.ndarray] = None,
+    wavenumbers: Optional[np.ndarray] = None,
     subsample_wn: int = 2,
     subsample_time: int = 1,
     title: str = "3D Dataset Visualization",
