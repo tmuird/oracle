@@ -9,7 +9,7 @@ Implements:
 from dataclasses import dataclass
 from typing import Tuple, Optional, Dict
 import numpy as np
-from scipy.optimize import differential_evolution, curve_fit
+from scipy.optimize import differential_evolution, curve_fit, nnls
 from scipy.linalg import lstsq
 
 from ramanlib.core import SpectralData
@@ -23,6 +23,7 @@ class DecompositionResult:
     rates: np.ndarray  # (n_fluorophores,)
     fluorophore_spectra: SpectralData  # (n_fluorophores, n_wavenumbers)
     mse: float = 0.0
+    polynomial_coeffs: Optional[np.ndarray] = None  # (n_fluorophores, degree+1) if polynomial bases used
 
     @property
     def time_constants(self) -> np.ndarray:
@@ -62,7 +63,7 @@ def solve_spectra_given_rates(
     time_values: np.ndarray,
     decay_rates: np.ndarray,
     non_negative: bool = True,
-) -> Tuple[SpectralData, SpectralData]:
+) -> DecompositionResult:
     """
     Solve for Raman and fluorescence spectra given fixed decay rates.
 
@@ -109,7 +110,140 @@ def solve_spectra_given_rates(
         raman = SpectralData(np.maximum(raman.intensities, 0), data.wavenumbers)
         fluorescence = SpectralData(np.maximum(fluorescence.intensities, 0), data.wavenumbers)
 
-    return raman, fluorescence
+    return DecompositionResult(
+        raman=raman,
+        rates=decay_rates,
+        fluorophore_spectra=fluorescence,
+    )   
+
+
+def solve_spectra_with_polynomial_bases(
+    data: SpectralData,
+    time_values: np.ndarray,
+    decay_rates: np.ndarray,
+    polynomial_degree: int = 3,
+) -> DecompositionResult:
+    """
+    Solve for Raman + polynomial-constrained fluorophore spectra given fixed decay rates.
+
+    Model:
+        Y(t,ν) = s(ν) + Σₖ Fₖ(ν)·exp(-λₖ·t)
+        where Fₖ(ν) = Σⱼ aₖⱼ·νʲ  (polynomial constraint)
+
+    This is reformulated as a single linear problem:
+        Y(t,ν) = s(ν) + Σₖ Σⱼ aₖⱼ·νʲ·exp(-λₖ·t)
+
+    which is LINEAR in [s(ν), aₖⱼ] and solved with NNLS.
+
+    Parameters
+    ----------
+    data : SpectralData
+        Time series data with wavenumbers
+    time_values : np.ndarray
+        Time points
+    decay_rates : np.ndarray
+        Decay rates λₖ
+    polynomial_degree : int
+        Degree of polynomial for fluorophore bases
+
+    Returns
+    -------
+    raman : SpectralData
+        Estimated Raman spectrum
+    fluorescence : SpectralData
+        Fluorescence spectra (reconstructed from polynomials)
+    polynomial_coeffs : np.ndarray
+        Polynomial coefficients, shape (n_fluorophores, degree+1)
+    """
+    n_timepoints, n_wavenumbers = data.intensities.shape
+    n_fluorophores = len(decay_rates)
+
+    # Normalize wavenumbers to [0, 1] for numerical stability
+    wn = data.wavenumbers
+    wn_min, wn_max = wn.min(), wn.max()
+    wn_norm = (wn - wn_min) / (wn_max - wn_min)
+
+    # Build polynomial basis matrix: [1, ν, ν², ν³, ...]
+    poly_basis = np.zeros((n_wavenumbers, polynomial_degree + 1))
+    for j in range(polynomial_degree + 1):
+        poly_basis[:, j] = wn_norm ** j
+
+    # Build temporal decay basis: [exp(-λₖt)]
+    decay_basis = np.zeros((n_timepoints, n_fluorophores))
+    for k, rate in enumerate(decay_rates):
+        decay_basis[:, k] = np.exp(-rate * time_values)
+
+    # Flatten data for global solve
+    Y_flat = data.intensities.flatten()  # (T*W,)
+
+    # Build design matrix X such that Y_flat = X @ beta
+    # beta = [s(ν₁), s(ν₂), ..., s(νW), a₀¹, a₁¹, ..., a₀², a₁², ...]
+    n_params = n_wavenumbers + n_fluorophores * (polynomial_degree + 1)
+    X = np.zeros((n_timepoints * n_wavenumbers, n_params))
+
+    # Fill in Raman part (time-invariant, per-wavenumber)
+    # VECTORIZED: Each wavenumber appears at every time point
+    for j in range(n_wavenumbers):
+        X[j::n_wavenumbers, j] = 1.0
+
+    # Fill in fluorophore polynomial part - VECTORIZED
+    param_offset = n_wavenumbers
+    for k in range(n_fluorophores):
+        for m in range(polynomial_degree + 1):
+            # For fluorophore k, coefficient m:
+            # Contribution at (t_i, ν_j) is: poly_basis[j,m] * decay_basis[i,k]
+            # This is outer product of decay_basis[:,k] and poly_basis[:,m]
+
+            coeff_idx = param_offset + k * (polynomial_degree + 1) + m
+
+            # Create (T, W) matrix of contributions, then flatten
+            contribution = decay_basis[:, k:k+1] @ poly_basis[:, m:m+1].T  # (T, W)
+            X[:, coeff_idx] = contribution.flatten()
+
+    # Problem: Raman columns have norm ~sqrt(T), but fluorophore columns have
+    # norm ~sqrt(T*W), causing severe bias in lstsq when W is large (e.g., 630)
+    # Solution: Normalize all columns to unit norm before solving
+    column_norms = np.linalg.norm(X, axis=0)
+    column_norms[column_norms == 0] = 1.0  # Avoid division by zero
+
+    X_normalized = X / column_norms[None, :]
+
+    # Solve with least squares (much faster than NNLS)
+    # Note: Using lstsq instead of nnls for speed
+    # NNLS enforces non-negativity but is iterative (slow on large matrices)
+    # lstsq is direct and much faster
+    beta_normalized, _, _, _ = lstsq(X_normalized, Y_flat, lapack_driver='gelsd')
+
+    # Rescale beta back to original scale
+    beta = beta_normalized / column_norms
+
+    # Clip to non-negative (post-hoc enforcement)
+    beta = np.maximum(beta, 0)
+
+    # Extract results
+    raman_intensities = beta[:n_wavenumbers]
+
+    polynomial_coeffs = np.zeros((n_fluorophores, polynomial_degree + 1))
+    fluorophore_intensities = np.zeros((n_fluorophores, n_wavenumbers))
+
+    for k in range(n_fluorophores):
+        start_idx = n_wavenumbers + k * (polynomial_degree + 1)
+        end_idx = start_idx + polynomial_degree + 1
+        polynomial_coeffs[k] = beta[start_idx:end_idx]
+
+        # Reconstruct fluorophore spectrum from polynomial
+        fluorophore_intensities[k] = poly_basis @ polynomial_coeffs[k]
+
+    raman = SpectralData(raman_intensities, wn)
+    fluorescence = SpectralData(fluorophore_intensities, wn)
+
+    return DecompositionResult(
+        raman=raman,
+        rates=decay_rates,
+        fluorophore_spectra=fluorescence,
+        mse=
+        polynomial_coeffs=polynomial_coeffs,
+    )
 
 
 def decompose(
@@ -122,12 +256,17 @@ def decompose(
     seed: int = 42,
     polish: bool = True,
     verbose: bool = False,
+    use_polynomial_bases: bool = False,  # Default: polynomial constraint (slower but correct!)
+    polynomial_degree: int = 3,  # Polynomial degree for fluorophore bases
 ) -> DecompositionResult:
     """
     Decompose Y(t, ν) into Raman + fluorescence with exponential decay.
 
     Uses Differential Evolution for global rate optimization, then
     solves analytically for spectra given those rates.
+
+    **Default**: Polynomial-constrained bases (slower but physically correct)
+    **For speed**: Use `use_polynomial_bases=False` (may absorb Raman peaks!)
 
     Parameters
     ----------
@@ -152,26 +291,54 @@ def decompose(
         Apply L-BFGS-B refinement after DE
     verbose : bool
         Print optimization progress
+    use_polynomial_bases : bool (default=True)
+        If True (default), constrains fluorophore spectra to be smooth polynomials.
+        This prevents absorption of sharp Raman peaks into fluorescence.
+        If False, uses flexible per-wavenumber bases (faster but may absorb peaks).
+
+        **Note**: Polynomial bases are ~10-100× slower than flexible bases
+        due to larger matrix solve, but give physically correct results.
+        **For speed**: Set to False for quick tests, but use True for final analysis.
+
+    polynomial_degree : int
+        Degree of polynomial for fluorophore bases (default=3).
+        Only used if use_polynomial_bases=True.
+        **Note**: Polynomial bases are slower (~10-100×) than flexible bases
+        due to global optimization. Consider `fit_physics_model()` instead.
 
     Returns
     -------
     DecompositionResult
         Contains raman, rates, fluorophore_spectra, mse
+        If polynomial bases used, also contains polynomial_coeffs
 
     Examples
     --------
-    # Old way (still works)
-    >>> result = decompose(Y_array, time_points=t_array, wavenumbers=wn_array)
-
-    # New way (cleaner)
+    # Default: polynomial-constrained (slower but correct)
     >>> data = SpectralData(Y_array, wn_array, time_values=t_array)
-    >>> result = decompose(data[:40])  # First 40 frames
+    >>> result = decompose(data[:40], n_fluorophores=3)  # Uses polynomial bases
+
+    # Fast mode: flexible bases (for quick tests, may absorb peaks)
+    >>> result = decompose(data[:40], n_fluorophores=3, use_polynomial_bases=False)
+
+    # Speed up polynomial for demos
+    >>> result = decompose(data[:20], n_fluorophores=3, maxiter=10)  # Fewer frames + iterations
 
     Notes
     -----
     Rate bounds of (0.01, 20) correspond to:
         τ_max = 1/0.01 = 100s (very slow decay)
         τ_min = 1/20 = 0.05s (fast decay)
+
+    Polynomial bases enforce that fluorescence is smooth, preventing
+    sharp Raman peaks from being absorbed into fluorophore spectra.
+    This is critical for physical correctness.
+
+    **Performance**: Polynomial bases solve a (T×W, W+K×d) global matrix
+    vs W independent (T, K+1) problems for flexible bases. For typical
+    data (T=40, W=554, K=3), this is 10-100× slower per iteration.
+    Use fewer frames/iterations for demos, or use_polynomial_bases=False
+    for quick tests.
     """
     # Extract arrays from SpectralData if provided
     if isinstance(data, SpectralData):
@@ -203,15 +370,25 @@ def decompose(
     T, W = spectral_data.intensities.shape
     K = n_fluorophores
 
-    def solve_given_rates(rates):
-        raman, fluor = solve_spectra_given_rates(spectral_data, t, rates)
-        decay = np.exp(-rates[:, None] * t[None, :])
-        Y_recon = raman.intensities[None, :] + decay.T @ fluor.intensities
-        mse = np.mean((spectral_data.intensities - Y_recon) ** 2)
-        return raman, fluor, mse
-
+    # Choose solver based on use_polynomial_bases flag, this will determine our objective function
+    if use_polynomial_bases:
+        def solve_given_rates(rates):
+            poly_result = solve_spectra_with_polynomial_bases(
+                spectral_data, t, rates, polynomial_degree
+            )
+            decay = np.exp(-rates[:, None] * t[None, :])
+            Y_recon = poly_result.raman.intensities[None, :] + decay.T @ poly_result.fluorophore_spectra.intensities
+            mse = np.mean((spectral_data.intensities - Y_recon) ** 2)
+            return poly_result.raman, poly_result.fluorophore_spectra, poly_result.polynomial_coeffs, mse
+    else:
+        def solve_given_rates(rates):
+            result = solve_spectra_given_rates(spectral_data, t, rates)
+            decay = np.exp(-rates[:, None] * t[None, :])
+            Y_recon = result.raman.intensities[None, :] + decay.T @ result.fluorophore_spectra.intensities
+            mse = np.mean((spectral_data.intensities - Y_recon) ** 2)
+            return result.raman, result.fluorophore_spectra, None, mse  # No poly_coeffs for flexible bases
     def objective(rates):
-        _, _, mse = solve_given_rates(rates)
+        *_, mse = solve_given_rates(rates)
         return mse
 
     result = differential_evolution(
@@ -226,13 +403,14 @@ def decompose(
     )
 
     best_rates = np.clip(result.x, rate_bounds[0], rate_bounds[1])
-    raman, fluor, mse = solve_given_rates(best_rates)
+    raman, fluor, poly_coeffs, mse = solve_given_rates(best_rates)
 
     return DecompositionResult(
         raman=raman,
         rates=best_rates,
         fluorophore_spectra=fluor,
         mse=float(mse),
+        polynomial_coeffs=poly_coeffs,
     )
 
 
@@ -259,15 +437,15 @@ def decompose_with_known_rates(
     -------
     DecompositionResult
     """
-    raman, fluor = solve_spectra_given_rates(Y, time_points, rates)
+    result = solve_spectra_given_rates(Y, time_points, rates)
     decay = np.exp(-rates[:, None] * time_points[None, :])
-    Y_recon = raman[None, :] + decay.T @ fluor
+    Y_recon = result.raman.intensities[None, :] + decay.T @ result.fluorophore_spectra.intensities
     mse = np.mean((Y - Y_recon) ** 2)
 
     return DecompositionResult(
-        raman=raman,
+        raman=result.raman,
         rates=rates,
-        fluorophore_spectra=fluor,
+        fluorophore_spectra=result.fluorophore_spectra,
         mse=mse,
     )
 

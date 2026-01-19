@@ -24,6 +24,7 @@ from ramanlib.bleaching.decompose import (
     DecompositionResult,
     decompose,
     solve_spectra_given_rates,
+    solve_spectra_with_polynomial_bases,
     decompose_with_known_rates,
     estimate_decay_rates_from_early_frames,
 )
@@ -81,6 +82,7 @@ __all__ = [
     "DecompositionResult",
     "decompose",
     "solve_spectra_given_rates",
+    "solve_spectra_with_polynomial_bases",
     "decompose_with_known_rates",
     "estimate_decay_rates_from_early_frames",
     # NN Model

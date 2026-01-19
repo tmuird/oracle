@@ -89,7 +89,8 @@ def compare_spectra(
             spec.label = title
 
     spectral_data = data
-
+    if hasattr(spectral_data, "time_values") is True:
+        TIME_SERIES = True
     # Apply cropping if specified
     if crop is not None:
         cropped_data = []
@@ -143,6 +144,7 @@ def compare_spectra(
                 for dataset_idx, spec in enumerate(spectral_data):
                     wn, intensity = spec.get_spectrum(sample_idx)
                     label = spec.label or f"Dataset {dataset_idx}"
+                    
                     ax.plot(wn, intensity, alpha=alphas[dataset_idx], label=label)
 
                 if legend:

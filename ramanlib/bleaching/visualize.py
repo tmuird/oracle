@@ -1,9 +1,11 @@
 """Visualization utilities for bleaching decomposition."""
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 import numpy as np
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
+import ramanspy as rp
+from ramanlib.core import SpectralData
 
 
 def visualize_data_3d(
@@ -75,12 +77,15 @@ from matplotlib.figure import Figure
 
 
 def visualise_decomposition(
-    data,  # Union[np.ndarray, SpectralData]
+    data: Union[np.ndarray, SpectralData],
     decomposition: Dict[str, np.ndarray],
     reconstruction: Optional[np.ndarray] = None,
     time_values: Optional[np.ndarray] = None,
+    show_airpls: bool = False,
     wavenumbers: Optional[np.ndarray] = None,
     reference_raman: Optional[np.ndarray] = None,
+    reference_bases: Optional[np.ndarray] = None,
+    reference_rates: Optional[np.ndarray] = None,
     normalise: bool = False,
     figsize: Tuple[int, int] = (16, 10),
 ):
@@ -119,7 +124,7 @@ def visualise_decomposition(
         data = SpectralData(Y_array, wn, time_values=t)
         visualise_decomposition(data, decomposition)
     """
-    from ramanlib.core import SpectralData
+   
 
     # Extract arrays from SpectralData if provided
     if isinstance(data, SpectralData):
@@ -139,8 +144,6 @@ def visualise_decomposition(
     if wavenumbers is None:
         wavenumbers = np.arange(n_wn)
 
-    # Extract decomposition parameters (handle both SpectralData and np.ndarray)
-    from ramanlib.core import SpectralData
 
     raman_obj = decomposition["raman"]
     bases_obj = decomposition.get("fluorophore_bases", decomposition.get("bases"))
@@ -195,6 +198,8 @@ def visualise_decomposition(
     ax = axes[0, 1]
     ax.plot(wavenumbers, raman, "b-", linewidth=2, label="Extracted Raman")
     ax.plot(wavenumbers, reference_raman, "r--", alpha=0.7, label=ref_label)
+    if show_airpls:
+        ax.plot(wavenumbers, data[20].apply_ramanspy_preprocessing(rp.preprocessing.baseline.AIRPLS()).intensities, "g:", alpha=0.7, label="AIRPLS Baseline")
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity")
     ax.set_title("Extracted Raman Spectrum")
@@ -212,6 +217,18 @@ def visualise_decomposition(
                 bases[i],
                 color=colors[i % len(colors)],
                 label=f"B{i + 1} (τ={tau:.3f}s)",
+            )
+    if reference_bases is not None:
+        for i in range(reference_bases.shape[0]):
+            if reference_rates is not None:
+                tau = 1.0 / reference_rates[i]
+            ax.plot(
+                wavenumbers,
+                reference_bases[i],
+                color=colors[i % len(colors)],
+                linestyle="--",
+                alpha=0.7,
+                label=f"GT B{i + 1} (τ={tau:.3f}s)",
             )
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity (normalized)")
@@ -234,7 +251,24 @@ def visualise_decomposition(
                 colors[i % len(colors)],
                 label=f"τ={tau:.3f}s, w={abundances[i]:.1f}",
             )
-
+    if reference_bases is not None and reference_rates is not None:
+        total_gt_fluor = np.zeros(n_t)
+        for i in range(reference_bases.shape[0]):
+            decay = np.exp(-reference_rates[i] * time_values)
+            amplitude = (
+                abundances[i] * decay * reference_bases[i].mean()
+            )  # Using same abundances for GT
+            total_gt_fluor += amplitude
+            ax.plot(
+                time_values,
+                amplitude,
+                colors[i % len(colors)],
+                linestyle="--",
+                alpha=0.7,
+                label=f"GT τ={1.0/reference_rates[i]:.3f}s",
+            )
+        # Compute total fluorophore from GT bases
+        ax.plot(time_values, total_gt_fluor, "r--", linewidth=2, label="Total GT Predicted")
     ax.plot(time_values, total_fluor, "k--", linewidth=2, label="Total Predicted")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Mean Fluorescence")
@@ -586,7 +620,7 @@ def plot_temporal_decomposition(
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity")
     ax.set_title("Total Fluorescence Decay")
-    ax.legend(loc="upper right", fontsize=8)
+    # ax.legend(loc="upper right", fontsize=8)
     ax.grid(True, alpha=0.3)
 
     # Bottom left: Individual fluorophore decay curves

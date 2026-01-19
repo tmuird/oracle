@@ -40,11 +40,11 @@ class PhysicsDecomposition(nn.Module):
         n_timepoints: int,
         n_fluorophores: int = 3,
         time_values: Optional[torch.Tensor] = None,
-        initial_abundances: Optional[torch.Tensor] = None,
-        initial_decay_rates: Optional[torch.Tensor] = None,
-        initial_fluorophore_bases: Optional[torch.Tensor] = None,
-        initial_raman_spectrum: Optional[torch.Tensor] = None,
-        initial_poly_coeffs: Optional[torch.Tensor] = None,
+        initial_abundances: Optional[np.ndarray] = None,
+        initial_rates: Optional[np.ndarray] = None,
+        initial_bases: Optional[np.ndarray] = None,
+        initial_raman: Optional[np.ndarray] = None,
+        initial_poly_coeffs: Optional[np.ndarray] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         basis_type: str = "free",
         polynomial_degree: int = 8,
@@ -70,9 +70,10 @@ class PhysicsDecomposition(nn.Module):
             )
 
         # Raman spectrum (log-space)
-        if initial_raman_spectrum is not None:
-            raman_tensor = self._to_tensor(initial_raman_spectrum, device)
-            self.raman_spectrum = nn.Parameter(torch.log(raman_tensor + 1e-8))
+        if initial_raman is not None:
+            self.raman_spectrum = nn.Parameter(
+                torch.log(self._to_tensor(initial_raman, device) + 1e-8), requires_grad=False
+            )
         else:
             self.raman_spectrum = nn.Parameter(
                 torch.randn(n_wavenumbers, device=device) * 0.1
@@ -80,10 +81,10 @@ class PhysicsDecomposition(nn.Module):
 
         # Fluorophore bases
         if basis_type == "free":
-            if initial_fluorophore_bases is not None:
-                bases_tensor = self._to_tensor(initial_fluorophore_bases, device)
+            if initial_bases is not None:
+                bases_tensor = self._to_tensor(initial_bases, device)
                 self.fluorophore_bases_raw = nn.Parameter(
-                    torch.log(bases_tensor + 1e-8)
+                    torch.log(bases_tensor + 1e-8), requires_grad=False
                 )
             else:
                 self.fluorophore_bases_raw = nn.Parameter(
@@ -94,7 +95,7 @@ class PhysicsDecomposition(nn.Module):
             if initial_poly_coeffs is not None:
                 poly_tensor = self._to_tensor(initial_poly_coeffs, device)
                 self.poly_coeffs = nn.Parameter(poly_tensor)
-            elif initial_fluorophore_bases is not None:
+            elif initial_bases is not None:
                 assert wavenumber_axis is not None
                 wn_np = (
                     wavenumber_axis.cpu().numpy()
@@ -102,13 +103,13 @@ class PhysicsDecomposition(nn.Module):
                     else wavenumber_axis
                 )
                 bases_np = (
-                    initial_fluorophore_bases.cpu().numpy()
-                    if isinstance(initial_fluorophore_bases, torch.Tensor)
-                    else initial_fluorophore_bases
+                    initial_bases.cpu().numpy()
+                    if isinstance(initial_bases, torch.Tensor)
+                    else initial_bases
                 )
                 coeffs, _, _ = fit_polynomial_bases(bases_np, wn_np, polynomial_degree)
                 self.poly_coeffs = nn.Parameter(
-                    torch.tensor(coeffs, dtype=torch.float32, device=device)
+                    torch.tensor(coeffs, dtype=torch.float32, device=device, requires_grad=False)
                 )
             else:
                 self.poly_coeffs = nn.Parameter(
@@ -138,21 +139,25 @@ class PhysicsDecomposition(nn.Module):
         # Abundances (log-space)
         if initial_abundances is not None:
             abund_tensor = self._to_tensor(initial_abundances, device)
-            self.abundances_raw = nn.Parameter(torch.log(abund_tensor + 1e-8))
+            self.abundances_raw = nn.Parameter(
+                torch.log(abund_tensor + 1e-8), requires_grad=False
+            )
         else:
             self.abundances_raw = nn.Parameter(
                 torch.zeros(n_fluorophores, device=device)
             )
 
         # Decay rates (log-space, with floor)
-        if initial_decay_rates is not None:
-            rates_tensor = self._to_tensor(initial_decay_rates, device)
+        if initial_rates is not None:
+            rates_tensor = self._to_tensor(initial_rates, device)
             adjusted = rates_tensor - min_decay_rate
             if torch.any(adjusted <= 0):
                 raise ValueError(
-                    f"initial_decay_rates must be > min_decay_rate ({min_decay_rate})"
+                    f"initial_rates must be > min_decay_rate ({min_decay_rate})"
                 )
-            self.decay_rates_raw = nn.Parameter(torch.log(adjusted + 1e-8))
+            self.decay_rates_raw = nn.Parameter(
+                torch.log(adjusted + 1e-8), requires_grad=False
+            )
         else:
             self.decay_rates_raw = nn.Parameter(
                 torch.randn(n_fluorophores, device=device) * 0.1
@@ -329,6 +334,10 @@ def fit_physics_model(
     n_epochs: int = 5000,
     lr: float = 0.01,
     first_times: Optional[int] = None,
+    initial_rates: Optional[np.ndarray] = None,
+    initial_bases: Optional[np.ndarray] = None,
+    initial_raman: Optional[np.ndarray] = None,
+    initial_poly_coeffs: Optional[np.ndarray] = None,
     verbose: bool = True,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     # use_physics_losses: bool = False,
@@ -390,11 +399,17 @@ def fit_physics_model(
         time_values = np.arange(n_timepoints, dtype=np.float32)
     time_tensor = torch.tensor(time_values, dtype=torch.float32, device=device)
 
+ 
+
     model = PhysicsDecomposition(
         n_wavenumbers=n_wavenumbers,
         n_timepoints=n_timepoints,
         n_fluorophores=n_fluorophores,
         time_values=time_tensor,
+        initial_rates=initial_rates,
+        initial_bases=initial_bases,
+        initial_raman=initial_raman,
+        initial_poly_coeffs=initial_poly_coeffs,
         device=device,
         **model_kwargs,
     )
@@ -426,7 +441,6 @@ def fit_physics_model(
         )
         total_loss = mse_loss
 
-        # # Add physics losses if enabled
         # if use_physics_losses:
         #     physics_loss_values = {}
 
@@ -503,7 +517,7 @@ def fit_physics_model(
             # if use_physics_losses:
             #     print(f"Epoch {epoch + 1}/{n_epochs}: total_loss={total_loss.item():.6f}, mse={mse_loss.item():.6f}, τ={tau}")
             # else:
-            print(f"Epoch {epoch + 1}/{n_epochs}: loss={mse_loss.item():.6f}, τ={tau}")
+            print(f"Epoch {epoch + 1}/{n_epochs}: loss={mse_loss.item():.3e}, τ={tau}")
 
     # Rescale back
     with torch.no_grad():
