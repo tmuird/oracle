@@ -381,7 +381,9 @@ class SpectralData:
             intensities=self.intensities.copy(),
             wavenumbers=self.wavenumbers.copy(),
             label=self.label,
-            time_values=self.time_values.copy() if self.time_values is not None else None,
+            time_values=(
+                self.time_values.copy() if self.time_values is not None else None
+            ),
         )
 
     def normalize_for_plotting(self, method="l2") -> "SpectralData":

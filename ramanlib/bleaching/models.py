@@ -17,12 +17,15 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from ramanlib.bleaching.decompose import DecompositionResult
 from ramanlib.bleaching.physics import (
     fit_polynomial_bases,
     build_vandermonde_torch,
     l2_normalize_torch,
     reconstruct_time_series_torch,
+    evaluate_polynomial_bases_torch,
 )
+from ramanlib.core import SpectralData
 
 
 class PhysicsDecomposition(nn.Module):
@@ -36,47 +39,50 @@ class PhysicsDecomposition(nn.Module):
 
     def __init__(
         self,
-        n_wavenumbers: int,
-        n_timepoints: int,
+        data: torch.Tensor,
+        time_values: torch.Tensor,
+        wavenumber_axis: torch.Tensor,
         n_fluorophores: int = 3,
-        time_values: Optional[torch.Tensor] = None,
+        basis_type: str = "polynomial",
+        polynomial_degree: int = 3,
+        min_decay_rate: float = 0.01,
         initial_abundances: Optional[np.ndarray] = None,
         initial_rates: Optional[np.ndarray] = None,
         initial_bases: Optional[np.ndarray] = None,
         initial_raman: Optional[np.ndarray] = None,
-        initial_poly_coeffs: Optional[np.ndarray] = None,
+        initial_log_poly_coeffs: Optional[np.ndarray] = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        basis_type: str = "free",
-        polynomial_degree: int = 8,
-        wavenumber_axis: Optional[torch.Tensor] = None,
-        min_decay_rate: float = 0.01,
     ):
         super().__init__()
-        self.n_wavenumbers = n_wavenumbers
-        self.n_timepoints = n_timepoints
         self.n_fluorophores = n_fluorophores
+        self.n_wavenumbers = len(wavenumber_axis)
+        self.n_times = len(time_values)
         self.device = device
         self.basis_type = basis_type
         self.polynomial_degree = polynomial_degree
         self.min_decay_rate = min_decay_rate
 
+        wn_mu = wavenumber_axis.mean()
+        wn_std = wavenumber_axis.std()
+
+        wn_normalised = (wavenumber_axis - wn_mu) / (wn_std + 1e-8)
+
+        # Register buffers so they are saved with the model state
+        self.register_buffer("wavenumbers", wavenumber_axis.to(device))
+        self.register_buffer("wn_normalised", wn_normalised.to(device))
+
         # Time axis
-        if time_values is not None:
-            self.register_buffer("time_values", time_values.to(device))
-        else:
-            self.register_buffer(
-                "time_values",
-                torch.arange(n_timepoints, dtype=torch.float32, device=device),
-            )
+        self.register_buffer("time_values", time_values.to(device))
 
         # Raman spectrum (log-space)
         if initial_raman is not None:
-            self.raman_spectrum = nn.Parameter(
-                torch.log(self._to_tensor(initial_raman, device) + 1e-8), requires_grad=False
+            self.raman = nn.Parameter(
+                torch.log(self._to_tensor(initial_raman, device) + 1e-8),
+                requires_grad=False,
             )
         else:
-            self.raman_spectrum = nn.Parameter(
-                torch.randn(n_wavenumbers, device=device) * 0.1
+            self.raman = nn.Parameter(
+                torch.randn(len(wavenumber_axis), device=device) * 0.1
             )
 
         # Fluorophore bases
@@ -88,51 +94,67 @@ class PhysicsDecomposition(nn.Module):
                 )
             else:
                 self.fluorophore_bases_raw = nn.Parameter(
-                    torch.randn(n_fluorophores, n_wavenumbers, device=device) * 0.1
+                    torch.randn(
+                        n_fluorophores, self.wavenumbers.shape[0], device=device
+                    )
+                    * 0.1
                 )
         elif basis_type == "polynomial":
             n_coeffs = polynomial_degree + 1
-            if initial_poly_coeffs is not None:
-                poly_tensor = self._to_tensor(initial_poly_coeffs, device)
-                self.poly_coeffs = nn.Parameter(poly_tensor)
-            elif initial_bases is not None:
-                assert wavenumber_axis is not None
-                wn_np = (
-                    wavenumber_axis.cpu().numpy()
-                    if isinstance(wavenumber_axis, torch.Tensor)
-                    else wavenumber_axis
+            if initial_log_poly_coeffs is not None:
+                log_poly_tensor = self._to_tensor(initial_log_poly_coeffs, device)
+                self.log_poly_coeffs = nn.Parameter(
+                    log_poly_tensor, requires_grad=False
                 )
+                # If coeffs provided without stats, compute stats from wavenumbers
+                self.register_buffer(
+                    "poly_norm_mean",
+                    torch.tensor(wn_mu, dtype=torch.float32, device=device),
+                )
+                self.register_buffer(
+                    "poly_norm_std",
+                    torch.tensor(wn_std, dtype=torch.float32, device=device),
+                )
+            elif initial_bases is not None:
+                # Use RAW wavenumbers (fit_polynomial_bases handles normalization)
+                wn_np = wavenumber_axis.cpu().numpy() if isinstance(wavenumber_axis, torch.Tensor) else wavenumber_axis
                 bases_np = (
                     initial_bases.cpu().numpy()
                     if isinstance(initial_bases, torch.Tensor)
                     else initial_bases
                 )
-                coeffs, _, _ = fit_polynomial_bases(bases_np, wn_np, polynomial_degree)
-                self.poly_coeffs = nn.Parameter(
-                    torch.tensor(coeffs, dtype=torch.float32, device=device, requires_grad=False)
+                log_coeffs, wn_mean, wn_std = fit_polynomial_bases(
+                    bases_np, wn_np, polynomial_degree
+                )
+                self.log_poly_coeffs = nn.Parameter(
+                    torch.tensor(log_coeffs, dtype=torch.float32, device=device),
+                    requires_grad=False,
+                )
+                # Store normalization stats as buffers
+                self.register_buffer(
+                    "poly_norm_mean",
+                    torch.tensor(wn_mean, dtype=torch.float32, device=device),
+                )
+                self.register_buffer(
+                    "poly_norm_std",
+                    torch.tensor(wn_std, dtype=torch.float32, device=device),
                 )
             else:
-                self.poly_coeffs = nn.Parameter(
+                self.log_poly_coeffs = nn.Parameter(
                     torch.randn(n_fluorophores, n_coeffs, device=device) * 0.1
                 )
-
-            # Normalized wavenumber axis
-            if wavenumber_axis is not None:
-                wn = (
-                    wavenumber_axis.to(device)
-                    if isinstance(wavenumber_axis, torch.Tensor)
-                    else torch.tensor(
-                        wavenumber_axis, dtype=torch.float32, device=device
-                    )
+                # Initialize stats from wavenumbers
+                self.register_buffer(
+                    "poly_norm_mean",
+                    torch.tensor(wn_mu, dtype=torch.float32, device=device),
                 )
-            else:
-                wn = torch.arange(n_wavenumbers, dtype=torch.float32, device=device)
+                self.register_buffer(
+                    "poly_norm_std",
+                    torch.tensor(wn_std, dtype=torch.float32, device=device),
+                )
 
-            wn_min, wn_max = wn.min(), wn.max()
-            wn_normalised = 2.0 * (wn - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
-            self.register_buffer("wn_normalised", wn_normalised)
-            vandermonde = build_vandermonde_torch(wn_normalised, polynomial_degree)
-            self.register_buffer("vandermonde", vandermonde)
+            # vandermonde = build_vandermonde_torch(wn_normalised, polynomial_degree)
+            # self.register_buffer("vandermonde", vandermonde)
         else:
             raise ValueError(f"Unknown basis_type: {basis_type}")
 
@@ -174,13 +196,20 @@ class PhysicsDecomposition(nn.Module):
         if self.basis_type == "free":
             bases = torch.exp(self.fluorophore_bases_raw)
         else:
-            poly_values = torch.matmul(self.poly_coeffs, self.vandermonde.T)
-            bases = torch.exp(poly_values)
-        return l2_normalize_torch(bases, dim=1)
+            # Use RAW wavenumbers with stored normalization stats
+            bases = evaluate_polynomial_bases_torch(
+                self.log_poly_coeffs,
+                self.wavenumbers,
+                wn_mean=float(self.poly_norm_mean.item()),
+                wn_std=float(self.poly_norm_std.item()),
+            )
+
+        # Ensure amplitude ambiguity is resolved via Normalization
+        return l2_normalize_torch(bases, dim=-1)
 
     @property
-    def raman_spectra(self) -> torch.Tensor:
-        return torch.exp(self.raman_spectrum)
+    def raman_spectrum(self) -> torch.Tensor:
+        return torch.exp(self.raman)
 
     @property
     def abundances(self) -> torch.Tensor:
@@ -193,29 +222,34 @@ class PhysicsDecomposition(nn.Module):
     def forward(self) -> torch.Tensor:
         """Reconstruct time series from parameters."""
         return reconstruct_time_series_torch(
-            self.raman_spectra,
+            self.raman_spectrum,
             self.fluorophore_bases,
             self.abundances,
             self.decay_rates,
             self.time_values,
         )
 
-    def get_decomposition(self) -> Dict[str, np.ndarray]:
+    def get_decomposition(self) -> DecompositionResult:
         """Return components as numpy arrays, sorted by decay rate."""
         with torch.no_grad():
             rates = self.decay_rates.cpu().numpy()
             sort_idx = np.argsort(rates)[::-1]
 
-            result = {
-                "raman": self.raman_spectra.cpu().numpy(),
-                "fluorophore_bases": self.fluorophore_bases.cpu().numpy()[sort_idx],
-                "abundances": self.abundances.cpu().numpy()[sort_idx],
-                "decay_rates": rates[sort_idx],
-                "rates": rates[sort_idx],
-                "time_constants": (1.0 / rates)[sort_idx],
-            }
+            result = DecompositionResult(
+                raman=SpectralData(
+                    self.raman_spectrum.cpu().numpy(), self.wavenumbers.cpu().numpy()
+                ),
+                rates=rates[sort_idx],
+                fluorophore_spectra=SpectralData(
+                    self.fluorophore_bases.cpu().numpy()[sort_idx],
+                    self.wavenumbers.cpu().numpy(),
+                ),
+                abundances=self.abundances.cpu().numpy()[sort_idx],
+            )
             if self.basis_type == "polynomial":
-                result["poly_coeffs"] = self.poly_coeffs.cpu().numpy()[sort_idx]
+                result.log_polynomial_coeffs = self.log_poly_coeffs.cpu().numpy()[
+                    sort_idx
+                ]
             return result
 
     def get_fluorescence_component(self, component_idx: int) -> np.ndarray:
@@ -328,8 +362,7 @@ class PhysicsDecomposition(nn.Module):
 
 
 def fit_physics_model(
-    data: np.ndarray,
-    time_values: Optional[np.ndarray] = None,
+    data: SpectralData,
     n_fluorophores: int = 3,
     n_epochs: int = 5000,
     lr: float = 0.01,
@@ -337,7 +370,7 @@ def fit_physics_model(
     initial_rates: Optional[np.ndarray] = None,
     initial_bases: Optional[np.ndarray] = None,
     initial_raman: Optional[np.ndarray] = None,
-    initial_poly_coeffs: Optional[np.ndarray] = None,
+    initial_log_poly_coeffs: Optional[np.ndarray] = None,
     verbose: bool = True,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     # use_physics_losses: bool = False,
@@ -385,31 +418,38 @@ def fit_physics_model(
     history : dict
         Training history with 'loss', 'mse', and optionally physics loss keys
     """
-    n_timepoints, n_wavenumbers = data.shape
+    n_timepoints, n_wavenumbers = data.intensities.shape
     if first_times is None:
         first_times = n_timepoints
 
     # Normalize data
-    scale_factor = np.max(data)
-    data_norm = data / scale_factor
+    # scale_factor = np.max(data.intensities)
+    # data_norm = data / scale_factor
 
-    data_tensor = torch.tensor(data_norm, dtype=torch.float32, device=device)
-
-    if time_values is None:
-        time_values = np.arange(n_timepoints, dtype=np.float32)
-    time_tensor = torch.tensor(time_values, dtype=torch.float32, device=device)
-
- 
+    data_tensor = torch.tensor(
+        data.intensities[:first_times, :], dtype=torch.float32, device=device
+    )
+    time_tensor = torch.tensor(
+        data.time_values[:first_times], dtype=torch.float32, device=device
+    )
+    wn_tensor = (
+        torch.tensor(data.wavenumbers, dtype=torch.float32, device=device)
+        if data.wavenumbers is not None
+        else None
+    )
+    print(
+        f"Shapes: data {data_tensor.shape}, time {time_tensor.shape}, wn {wn_tensor.shape}"
+    )
 
     model = PhysicsDecomposition(
-        n_wavenumbers=n_wavenumbers,
-        n_timepoints=n_timepoints,
-        n_fluorophores=n_fluorophores,
+        data=data_tensor,
         time_values=time_tensor,
+        wavenumber_axis=wn_tensor,
+        n_fluorophores=n_fluorophores,
         initial_rates=initial_rates,
         initial_bases=initial_bases,
         initial_raman=initial_raman,
-        initial_poly_coeffs=initial_poly_coeffs,
+        initial_log_poly_coeffs=initial_log_poly_coeffs,
         device=device,
         **model_kwargs,
     )
@@ -439,6 +479,11 @@ def fit_physics_model(
         mse_loss = torch.mean(
             (reconstruction[:first_times] - data_tensor[:first_times]) ** 2
         )
+        # print(reconstruction.mean())
+        # print(data_tensor.mean())
+
+        # print(mse_loss)
+
         total_loss = mse_loss
 
         # if use_physics_losses:
@@ -519,10 +564,10 @@ def fit_physics_model(
             # else:
             print(f"Epoch {epoch + 1}/{n_epochs}: loss={mse_loss.item():.3e}, τ={tau}")
 
-    # Rescale back
-    with torch.no_grad():
-        log_scale = np.log(scale_factor)
-        model.raman_spectrum.add_(log_scale)
-        model.abundances_raw.add_(log_scale)
+    # # Rescale back
+    # with torch.no_grad():
+    #     log_scale = np.log(scale_factor)
+    #     model.raman_spectrum.add_(log_scale)
+    #     model.abundances_raw.add_(log_scale)
 
     return model, history

@@ -39,7 +39,9 @@ class SyntheticConfig:
     n_fluorophores: int = 3
 
     # Decay rate sampling strategy
-    decay_sampling: Literal["uniform", "log_uniform", "multi_component"] = "multi_component"
+    decay_sampling: Literal["uniform", "log_uniform", "multi_component"] = (
+        "multi_component"
+    )
     decay_rate_min: float = 0.1
     decay_rate_max: float = 5.0
 
@@ -62,11 +64,10 @@ class SyntheticConfig:
     noise_type: str = "poisson_gaussian"
 
     # Basis generation
-    basis_type: str = "gaussian_mixture"
-    shared_bases: bool = True
-    shared_axis: bool = True
+    use_shared_bases: bool = True
+    # shared_axis: bool = True
     fluorophore_variation: float = 0.0
-    interpolation_method: Literal["linear", "polynomial", "spline"] = "polynomial"
+    interpolation_method: Literal["linear", "spline"] = "spline"
     polynomial_degree: int = 3
 
     # Polynomial parameterization
@@ -139,40 +140,44 @@ class SyntheticBleachingDataset:
 
         print(f"Bleaching time points: {self.bleaching_times}")
 
-        late_time = config.integration_times[-1] if config.integration_times else "1s"
-        self.raman_spectra = atcc_xr.sel(integration_time=late_time)
+        latest_time = (
+            config.integration_times[-1] if config.integration_times else "10s"
+        )
+        self.raman_spectra = atcc_xr.sel(integration_time=latest_time)
 
-        print(f"\nUsing integration time '{late_time}' for Raman extraction")
+        print(f"\nUsing integration time '{latest_time}' for Raman extraction")
         print(f"Available samples: {len(self.raman_spectra['sample'])}")
 
         self.wavenumbers = self.raman_spectra["wavenumber"].values
 
+        # TODO Multi sample support
         if self.wavenumbers.ndim == 1:
             n_atcc_samples = len(self.raman_spectra["sample"])
             self.wavenumbers = np.tile(self.wavenumbers, (n_atcc_samples, 1))
-            print(f"Wavenumber axis: shared (expanded to shape {self.wavenumbers.shape})")
+            print(
+                f"Wavenumber axis: shared (expanded to shape {self.wavenumbers.shape})"
+            )
         else:
+            self.wavenumbers = self.raman_spectra["wavenumber"].values
             print(f"Wavenumber axis: per-sample (shape {self.wavenumbers.shape})")
 
+        # for now pass single master axis as similar enough
         ref_wavenumbers = (
             self.wavenumbers[0] if self.wavenumbers.ndim == 2 else self.wavenumbers
         )
 
-        if config.shared_bases:
-            self.shared_bases = self._generate_fluorophore_bases(ref_wavenumbers)
-            self.poly_coeffs = None
+        if config.use_shared_bases:
 
-            if config.use_polynomial_fluorophores:
-                self.poly_coeffs = self._fit_polynomial_fluorophores(
-                    self.shared_bases, ref_wavenumbers
-                )
-                self.shared_bases = self._evaluate_polynomial_fluorophores(
-                    self.poly_coeffs, ref_wavenumbers
-                )
-                print(f"Using polynomial fluorophores (degree={config.fluorophore_polynomial_degree})")
-        else:
-            self.shared_bases = None
-            self.poly_coeffs = None
+            # self.fluorophore_names = np.empty(self.config.n_fluorophores)
+            self.shared_bases = self._generate_fluorophore_bases(ref_wavenumbers)
+        # if fluorophore_xr is not None and "fluorophore_name" in fluorophore_xr:
+        #     if self.config.use_shared_bases:
+        self.fluorophore_names: list[list[str]] = []
+
+        # Storage for polynomial normalization stats
+        self.poly_norm_mean: Optional[float] = None
+        self.poly_norm_std: Optional[float] = None
+        self.log_poly_coeffs: Optional[np.ndarray] = None
 
         self.dataset: Optional[xr.Dataset] = None
 
@@ -180,9 +185,11 @@ class SyntheticBleachingDataset:
         """Generate fluorophore basis spectra."""
         n_f = self.config.n_fluorophores
 
+        # Use real fluorophore spectra if provided
         if self.fluorophore_xr is not None:
             return self._sample_real_fluorophores(wavenumbers)
 
+        # This code generates synthetic fluorophore spectra if no real data is provided
         n_wn = len(wavenumbers)
         wn = wavenumbers
         bases = np.zeros((n_f, n_wn))
@@ -201,7 +208,7 @@ class SyntheticBleachingDataset:
 
         return l2_normalize(bases, axis=1)
 
-    def _sample_real_fluorophores(self, wavenumbers: np.ndarray) -> np.ndarray:
+    def _sample_real_fluorophores(self, target_wavenumbers: np.ndarray) -> np.ndarray:
         """Sample real fluorophore spectra from fluorophore_xr dataset."""
         print("Sampling real fluorophore spectra...")
         assert self.fluorophore_xr is not None
@@ -211,76 +218,118 @@ class SyntheticBleachingDataset:
         n_available = len(fluor_ds["sample"])
 
         if n_f > n_available:
+            print(
+                f"Warning: Requested {n_f} fluorophores but only {n_available} available. Sampling with replacement."
+            )
             indices = self.rng.choice(n_available, size=n_f, replace=True)
         else:
             indices = self.rng.choice(n_available, size=n_f, replace=False)
+        if "fluorophore_name" in fluor_ds:
+            self.fluorophore_names.append(
+                fluor_ds.isel(sample=indices).fluorophore_name.values
+            )
 
-        bases = np.zeros((n_f, len(wavenumbers)))
+        bases = np.zeros((n_f, len(target_wavenumbers)))
 
         if "wavenumber" in fluor_ds.coords:
-            fluor_wn = fluor_ds["wavenumber"].values
+            source_wn = fluor_ds["wavenumber"].values
         elif "wavelength" in fluor_ds.coords:
             from ramanlib.bleaching.fluorophores import nm_to_wavenumber
+
             fluor_wavelength = fluor_ds["wavelength"].values
-            fluor_wn = nm_to_wavenumber(fluor_wavelength, laser_nm=self.config.laser_nm)
+            source_wn = nm_to_wavenumber(
+                fluor_wavelength, laser_nm=self.config.laser_nm
+            )
         else:
-            raise ValueError("Fluorophore dataset must have 'wavenumber' or 'wavelength'")
+            raise ValueError(
+                "Fluorophore dataset must have 'wavenumber' or 'wavelength'"
+            )
+        bases = fluor_ds["intensity"].isel(sample=indices).values
 
-        for i, idx in enumerate(indices):
-            spectrum = fluor_ds["intensity"].isel(sample=idx).values
+        axes_match = (len(source_wn) == len(target_wavenumbers)) and np.allclose(
+            source_wn, target_wavenumbers
+        )
+        if axes_match and not self.config.use_polynomial_fluorophores:
+            # all good, no interpolation needed
+            pass
+        elif self.config.use_polynomial_fluorophores:
+            print("Warning: source_wn and target_wavenumbers do not match.")
+            print("Using polynomial fitting for fluorophore basis.")
 
-            if not np.array_equal(fluor_wn, wavenumbers):
-                if (np.diff(fluor_wn) < 0).any() != (np.diff(wavenumbers) < 0).any():
-                    spectrum = spectrum[::-1]
-                    fluor_wn_sorted = fluor_wn[::-1]
-                else:
-                    fluor_wn_sorted = fluor_wn
+            # fit on source axis
+            log_poly_coeffs = self._fit_polynomial_fluorophores(bases, source_wn)
+            self.log_poly_coeffs = log_poly_coeffs
+            # log_intensity_values = vandermonde @ log_poly_coeffs
+            # spectrum = np.exp(log_intensity_values)
 
-                if self.config.interpolation_method == "polynomial":
-                    coeffs = np.polyfit(
-                        fluor_wn_sorted, spectrum, deg=self.config.polynomial_degree
-                    )
-                    poly = np.poly1d(coeffs)
-                    spectrum = poly(wavenumbers)
-                elif self.config.interpolation_method == "spline":
-                    spline = UnivariateSpline(fluor_wn_sorted, spectrum, k=3, s=0)
-                    spectrum = spline(wavenumbers)
-                else:
-                    spectrum = np.interp(
-                        wavenumbers, fluor_wn_sorted, spectrum, left=0.0, right=0.0
-                    )
+            # Evaluate on target axis
+            bases_processed = evaluate_polynomial_bases(
+                log_poly_coeffs,
+                target_wavenumbers,
+                self.poly_norm_mean,
+                self.poly_norm_std,
+            )
+        # else:
+        #     if self.config.interpolation_method == "spline":
+        #         print("Using spline interpolation for fluorophore basis.")
+        #         spline = UnivariateSpline(source_wn, bases, k=3, s=0)
+        #         bases_processed = spline(target_wavenumbers)
+        #     else:
+        #         print("Using linear interpolation for fluorophore basis.")
+        #         # use linear interpolation if not spline
+        #         bases_processed = np.interp(
+        #             target_wavenumbers, source_wn, bases, left=0.0, right=0.0
+        #             )
 
-            if self.config.fluorophore_variation > 0:
-                intensity_scale = self.rng.normal(1.0, self.config.fluorophore_variation)
-                intensity_scale = np.clip(intensity_scale, 0.5, 1.5)
-                spectrum = spectrum * intensity_scale
+        # if self.config.fluorophore_variation > 0:
+        #     intensity_scale = self.rng.normal(
+        #         1.0, self.config.fluorophore_variation
+        #     )
+        #     intensity_scale = np.clip(intensity_scale, 0.5, 1.5)
+        #     spectrum = spectrum * intensity_scale
 
-                noise_scale = self.config.fluorophore_variation * 0.5
-                noise = self.rng.normal(0, noise_scale * spectrum.mean(), len(wavenumbers))
-                spectrum = spectrum + noise
+        #     noise_scale = self.config.fluorophore_variation * 0.5
+        #     noise = self.rng.normal(
+        #         0, noise_scale * spectrum.mean(), len(wavenumbers)
+        #     )
+        #     spectrum = spectrum + noise
 
-                baseline_offset = self.rng.uniform(0, 0.05 * spectrum.max())
-                spectrum = spectrum + baseline_offset
+        #     baseline_offset = self.rng.uniform(0, 0.05 * spectrum.max())
+        #     spectrum = spectrum + baseline_offset
 
-            spectrum = np.maximum(spectrum, 0)
-            bases[i] = spectrum
+        #     spectrum = np.maximum(spectrum, 0)
+        #     bases[i] = spectrum
 
-        return l2_normalize(bases, axis=1)
+        return l2_normalize(bases_processed, axis=1)
 
     def _fit_polynomial_fluorophores(
         self, bases: np.ndarray, wavenumbers: np.ndarray
     ) -> np.ndarray:
-        """Fit polynomials to fluorophore bases."""
-        poly_coeffs, _, _ = fit_polynomial_bases(
+        """Fit polynomials to fluorophore bases and store normalization stats."""
+        # Fit on normalized wavenumbers (fit_polynomial_bases handles normalization)
+        log_poly_coeffs, wn_mean, wn_std = fit_polynomial_bases(
             bases, wavenumbers, self.config.fluorophore_polynomial_degree
         )
-        return poly_coeffs
+
+        # Store normalization stats for later evaluation
+        self.poly_norm_mean = wn_mean
+        self.poly_norm_std = wn_std
+
+        return log_poly_coeffs
 
     def _evaluate_polynomial_fluorophores(
-        self, poly_coeffs: np.ndarray, wavenumbers: np.ndarray
+        self, log_poly_coeffs: np.ndarray, wavenumbers: np.ndarray
     ) -> np.ndarray:
-        """Evaluate polynomial fluorophores."""
-        return evaluate_polynomial_bases(poly_coeffs, wavenumbers, normalize=True)
+        """Evaluate polynomial fluorophores using stored normalization stats."""
+        if self.poly_norm_mean is None or self.poly_norm_std is None:
+            raise ValueError(
+                "Normalization stats not set. Call _fit_polynomial_fluorophores first."
+            )
+
+        # Evaluate using the same normalization stats from fitting
+        return evaluate_polynomial_bases(
+            log_poly_coeffs, wavenumbers, self.poly_norm_mean, self.poly_norm_std
+        )
 
     def _generate_decay_rates(self) -> np.ndarray:
         """Sample decay rates according to configured strategy."""
@@ -297,7 +346,9 @@ class SyntheticBleachingDataset:
             log_min = np.log(self.config.decay_rate_min)
             log_max = np.log(self.config.decay_rate_max)
             log_rates = self.rng.uniform(log_min, log_max, size=n_f)
-            return np.exp(log_rates)
+            rates = np.exp(log_rates)
+            print(f"Sampled log-uniform decay rates: {rates}")
+            return rates
 
         elif self.config.decay_sampling == "multi_component":
             decay_rates = []
@@ -322,9 +373,13 @@ class SyntheticBleachingDataset:
             return decay_rates
 
         else:
-            raise ValueError(f"Unknown decay_sampling mode: {self.config.decay_sampling}")
+            raise ValueError(
+                f"Unknown decay_sampling mode: {self.config.decay_sampling}"
+            )
 
-    def _generate_abundances(self, raman_spectrum: np.ndarray) -> np.ndarray:
+    def _generate_abundances(
+        self, raman_spectrum: np.ndarray, bases: np.ndarray
+    ) -> np.ndarray:
         """Generate abundances ensuring proper F/R ratio at t=0."""
         n_f = self.config.n_fluorophores
         fr_ratio = self.rng.uniform(self.config.fr_ratio_min, self.config.fr_ratio_max)
@@ -336,11 +391,6 @@ class SyntheticBleachingDataset:
             self.config.fluorophore_weight_max,
             size=n_f,
         )
-
-        if self.shared_bases is not None:
-            bases = self.shared_bases
-        else:
-            raise ValueError("Per-sample bases require wavenumber axis")
 
         basis_maxs = bases.max(axis=1)
         current_total = np.sum(raw_weights * basis_maxs)
@@ -412,7 +462,9 @@ class SyntheticBleachingDataset:
         n_f = self.config.n_fluorophores
 
         n_wn = len(
-            self.wavenumbers[0] if self.wavenumbers.ndim == 2 else self.wavenumbers
+            self.wavenumbers[0]
+            if self.wavenumbers.ndim == 2
+            else self.wavenumbers  # if not shared wavenumber axis, use first sample's axis
         )
         intensity_noisy = np.zeros((n_samples, n_times, n_wn), dtype=np.float32)
         intensity_clean = np.zeros((n_samples, n_times, n_wn), dtype=np.float32)
@@ -422,9 +474,10 @@ class SyntheticBleachingDataset:
         n_atcc_samples = len(self.raman_spectra["sample"])
         decay_rates_gt = np.zeros((n_samples, n_f), dtype=np.float32)
         abundances_gt = np.zeros((n_samples, n_f), dtype=np.float32)
+
         species_list = []
 
-        if self.shared_bases is not None:
+        if self.config.use_shared_bases:
             bases_storage = self.shared_bases
         else:
             bases_storage = []
@@ -441,20 +494,23 @@ class SyntheticBleachingDataset:
                 wn = self.wavenumbers
 
             if "species" in self.raman_spectra:
-                species = str(self.raman_spectra["species"].isel(sample=atcc_idx).values)
+                species = str(
+                    self.raman_spectra["species"].isel(sample=atcc_idx).values
+                )
             else:
                 species = "Unknown"
 
-            decay_rates = self._generate_decay_rates()
-            abundances = self._generate_abundances(raman)
-
-            if self.shared_bases is not None:
+            if self.config.use_shared_bases:
                 bases = self.shared_bases
             else:
                 bases = self._generate_fluorophore_bases(wn)
                 bases_storage.append(bases)
 
-            noisy, clean = self._reconstruct_time_series(raman, bases, abundances, decay_rates)
+            decay_rates = self._generate_decay_rates()
+            abundances = self._generate_abundances(raman, bases)
+            noisy, clean = self._reconstruct_time_series(
+                raman, bases, abundances, decay_rates
+            )
 
             intensity_noisy[i] = noisy
             intensity_clean[i] = clean
@@ -467,6 +523,7 @@ class SyntheticBleachingDataset:
             if (i + 1) % 500 == 0:
                 print(f"  Generated {i + 1}/{n_samples}")
 
+        fluorophore_name = self.fluorophore_names
         intensity_noisy = np.array(intensity_noisy, dtype=np.float32)
         intensity_clean = np.array(intensity_clean, dtype=np.float32)
         raman_gt = np.array(raman_gt, dtype=np.float32)
@@ -477,12 +534,18 @@ class SyntheticBleachingDataset:
                 "intensity_raw": (
                     ["sample", "bleaching_time", "wavenumber"],
                     intensity_noisy,
-                    {"long_name": "Synthetic Raman intensity (noisy)", "units": "counts"},
+                    {
+                        "long_name": "Synthetic Raman intensity (noisy)",
+                        "units": "counts",
+                    },
                 ),
                 "intensity_clean": (
                     ["sample", "bleaching_time", "wavenumber"],
                     intensity_clean,
-                    {"long_name": "Synthetic Raman intensity (clean)", "units": "counts"},
+                    {
+                        "long_name": "Synthetic Raman intensity (clean)",
+                        "units": "counts",
+                    },
                 ),
                 "raman_gt": (
                     ["sample", "wavenumber"],
@@ -504,6 +567,11 @@ class SyntheticBleachingDataset:
                     wavenumbers_all,
                     {"long_name": "Wavenumber axis (per-sample)", "units": "cm⁻¹"},
                 ),
+                "fluorophore_name": (
+                    ["sample", "fluorophore"],
+                    fluorophore_name,
+                    {"long_name": "Ground Truth Fluorophore Name"},
+                ),
                 "species": (["sample"], species_list),
             },
             coords={
@@ -514,28 +582,34 @@ class SyntheticBleachingDataset:
                 "title": "Synthetic Photobleaching Dataset",
                 "n_samples": n_samples,
                 "n_fluorophores": n_f,
-                "shared_bases": self.config.shared_bases,
+                "shared_bases": self.config.use_shared_bases,
                 "noise_type": self.config.noise_type,
                 "poisson_noise_scale": self.config.poisson_noise_scale,
                 "gaussian_noise_scale": self.config.gaussian_noise_scale,
                 "fr_ratio_range": f"{self.config.fr_ratio_min}-{self.config.fr_ratio_max}",
                 "decay_rate_range": f"{self.config.decay_rate_min}-{self.config.decay_rate_max} s⁻¹",
                 "seed": self.config.seed,
+                "poly_norm_mean": (
+                    self.poly_norm_mean if self.poly_norm_mean is not None else "None"
+                ),
+                "poly_norm_std": (
+                    self.poly_norm_std if self.poly_norm_std is not None else "None"
+                ),
             },
         )
 
-        if self.config.shared_bases:
+        if self.config.use_shared_bases:
             ds["fluorophore_bases_gt"] = (
                 ["fluorophore", "wavenumber"],
                 bases_storage,
                 {"long_name": "Shared fluorophore basis spectra"},
             )
-            if self.poly_coeffs is not None:
-                ds["poly_coeffs_gt"] = (
+            if self.log_poly_coeffs is not None:
+                ds["log_poly_coeffs_gt"] = (
                     ["fluorophore", "poly_coeff"],
-                    self.poly_coeffs,
+                    self.log_poly_coeffs,
                     {
-                        "long_name": "Ground truth polynomial coefficients",
+                        "long_name": "Ground truth log polynomial coefficients",
                         "polynomial_degree": self.config.fluorophore_polynomial_degree,
                     },
                 )
@@ -554,8 +628,12 @@ class SyntheticBleachingDataset:
         print(f"  Bleaching time points: {n_times}")
         print(f"  Wavenumber axis: per-sample (shape: {wavenumbers_all.shape})")
         print(f"  Fluorophores: {n_f}")
-        print(f"  Decay rate range: [{self.config.decay_rate_min}, {self.config.decay_rate_max}] s⁻¹")
-        print(f"  F/R ratio range: [{self.config.fr_ratio_min}, {self.config.fr_ratio_max}]")
+        print(
+            f"  Decay rate range: [{self.config.decay_rate_min}, {self.config.decay_rate_max}] s⁻¹"
+        )
+        print(
+            f"  F/R ratio range: [{self.config.fr_ratio_min}, {self.config.fr_ratio_max}]"
+        )
 
         return ds
 

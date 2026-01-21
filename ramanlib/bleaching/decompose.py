@@ -7,12 +7,13 @@ Implements:
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, Union
 import numpy as np
 from scipy.optimize import differential_evolution, curve_fit, nnls
 from scipy.linalg import lstsq
 
 from ramanlib.core import SpectralData
+from ramanlib.bleaching.physics import reconstruct_time_series
 
 
 @dataclass
@@ -21,9 +22,15 @@ class DecompositionResult:
 
     raman: SpectralData  # (n_wavenumbers,)
     rates: np.ndarray  # (n_fluorophores,)
+    # (n_fluorophores,)
     fluorophore_spectra: SpectralData  # (n_fluorophores, n_wavenumbers)
+    abundances: Optional[np.ndarray] = None  # (n_fluorophores,) if needed
     mse: float = 0.0
-    polynomial_coeffs: Optional[np.ndarray] = None  # (n_fluorophores, degree+1) if polynomial bases used
+    log_polynomial_coeffs: Optional[np.ndarray] = (
+        None  # (n_fluorophores, degree+1) if polynomial bases used
+    )
+    poly_norm_mean: Optional[float] = None  # Wavenumber normalization mean
+    poly_norm_std: Optional[float] = None  # Wavenumber normalization std
 
     @property
     def time_constants(self) -> np.ndarray:
@@ -32,30 +39,16 @@ class DecompositionResult:
 
     def reconstruction(self, time_points: np.ndarray) -> np.ndarray:
         """Reconstruct Y(t, ν) from decomposition parameters."""
-        decay = np.exp(-self.rates[:, None] * time_points[None, :])  # (K, T)
-        Y = (
-            self.raman.intensities[None, :]
-            + decay.T @ self.fluorophore_spectra.intensities
-        )  # (T, W)
-        return Y
+        if self.abundances is None:
+            self.abundances = np.ones(len(self.rates))
 
-    def to_dict(self) -> dict:
-        """
-        Convert to dictionary for visualization functions.
-
-        Returns SpectralData objects which contain both intensities and wavenumbers.
-        Visualization functions will extract what they need.
-        """
-        return {
-            "raman": self.raman,  # SpectralData
-            "rates": self.rates,
-            "decay_rates": self.rates,
-            "fluorophore_bases": self.fluorophore_spectra,  # SpectralData
-            "bases": self.fluorophore_spectra,  # SpectralData
-            "abundances": np.ones(len(self.rates)),  # Absorbed into spectra
-            "time_constants": self.time_constants,
-            "mse": self.mse,
-        }
+        return reconstruct_time_series(
+            raman=self.raman.intensities,
+            bases=self.fluorophore_spectra.intensities,
+            abundances=self.abundances,
+            decay_rates=self.rates,
+            time_values=time_points,
+        )
 
 
 def solve_spectra_given_rates(
@@ -98,7 +91,9 @@ def solve_spectra_given_rates(
     # Design matrix: [1, exp(-λ₁t), exp(-λ₂t), ...]
     X = np.ones((n_timepoints, 1 + n_components))
     for i, rate in enumerate(decay_rates):
-        X[:, i + 1] = np.exp(-rate * time_values)
+        X[:, i + 1] = np.exp(
+            -rate * time_values
+        )  # this should populate each column with the evaluated exponential that corresponds to each fluorophore. We want to solve for beta. the corresponding coefficient for each element in the design matrix.
 
     # Solve Y = X @ beta
     beta, _, _, _ = lstsq(X, data.intensities, lapack_driver="gelsd")
@@ -108,18 +103,19 @@ def solve_spectra_given_rates(
 
     if non_negative:
         raman = SpectralData(np.maximum(raman.intensities, 0), data.wavenumbers)
-        fluorescence = SpectralData(np.maximum(fluorescence.intensities, 0), data.wavenumbers)
+        fluorescence = SpectralData(
+            np.maximum(fluorescence.intensities, 0), data.wavenumbers
+        )
 
     return DecompositionResult(
         raman=raman,
         rates=decay_rates,
         fluorophore_spectra=fluorescence,
-    )   
+    )
 
 
 def solve_spectra_with_polynomial_bases(
     data: SpectralData,
-    time_values: np.ndarray,
     decay_rates: np.ndarray,
     polynomial_degree: int = 3,
 ) -> DecompositionResult:
@@ -157,16 +153,17 @@ def solve_spectra_with_polynomial_bases(
     """
     n_timepoints, n_wavenumbers = data.intensities.shape
     n_fluorophores = len(decay_rates)
+    time_values = data.time_values
 
-    # Normalize wavenumbers to [0, 1] for numerical stability
+    # Normalize wavenumbers using z-score for consistency with other modules
     wn = data.wavenumbers
-    wn_min, wn_max = wn.min(), wn.max()
-    wn_norm = (wn - wn_min) / (wn_max - wn_min)
+    wn_mean = float(wn.mean())
+    wn_std = float(wn.std())
+    wn_norm = (wn - wn_mean) / (wn_std + 1e-8)
 
     # Build polynomial basis matrix: [1, ν, ν², ν³, ...]
-    poly_basis = np.zeros((n_wavenumbers, polynomial_degree + 1))
-    for j in range(polynomial_degree + 1):
-        poly_basis[:, j] = wn_norm ** j
+    # Uses Vandermonde for consistency with physics.py
+    poly_basis = np.vander(wn_norm, N=polynomial_degree + 1, increasing=True)
 
     # Build temporal decay basis: [exp(-λₖt)]
     decay_basis = np.zeros((n_timepoints, n_fluorophores))
@@ -197,7 +194,9 @@ def solve_spectra_with_polynomial_bases(
             coeff_idx = param_offset + k * (polynomial_degree + 1) + m
 
             # Create (T, W) matrix of contributions, then flatten
-            contribution = decay_basis[:, k:k+1] @ poly_basis[:, m:m+1].T  # (T, W)
+            contribution = (
+                decay_basis[:, k : k + 1] @ poly_basis[:, m : m + 1].T
+            )  # (T, W)
             X[:, coeff_idx] = contribution.flatten()
 
     # Problem: Raman columns have norm ~sqrt(T), but fluorophore columns have
@@ -212,7 +211,7 @@ def solve_spectra_with_polynomial_bases(
     # Note: Using lstsq instead of nnls for speed
     # NNLS enforces non-negativity but is iterative (slow on large matrices)
     # lstsq is direct and much faster
-    beta_normalized, _, _, _ = lstsq(X_normalized, Y_flat, lapack_driver='gelsd')
+    beta_normalized, _, _, _ = lstsq(X_normalized, Y_flat, lapack_driver="gelsd")
 
     # Rescale beta back to original scale
     beta = beta_normalized / column_norms
@@ -223,37 +222,48 @@ def solve_spectra_with_polynomial_bases(
     # Extract results
     raman_intensities = beta[:n_wavenumbers]
 
-    polynomial_coeffs = np.zeros((n_fluorophores, polynomial_degree + 1))
+    # Extract linear polynomial coefficients and reconstruct fluorophore spectra
+    linear_coeffs = np.zeros((n_fluorophores, polynomial_degree + 1))
     fluorophore_intensities = np.zeros((n_fluorophores, n_wavenumbers))
 
     for k in range(n_fluorophores):
         start_idx = n_wavenumbers + k * (polynomial_degree + 1)
         end_idx = start_idx + polynomial_degree + 1
-        polynomial_coeffs[k] = beta[start_idx:end_idx]
+        linear_coeffs[k] = beta[start_idx:end_idx]
 
-        # Reconstruct fluorophore spectrum from polynomial
-        fluorophore_intensities[k] = poly_basis @ polynomial_coeffs[k]
+        # Reconstruct fluorophore spectrum from linear polynomial
+        fluorophore_intensities[k] = poly_basis @ linear_coeffs[k]
+
+    # Convert to log-polynomial representation for consistency with other modules
+    # This fits log-space polynomials to the solved fluorophore spectra
+    from ramanlib.bleaching.physics import fit_polynomial_bases
+
+    log_polynomial_coeffs, _, _ = fit_polynomial_bases(
+        fluorophore_intensities, wn, polynomial_degree
+    )
 
     raman = SpectralData(raman_intensities, wn)
     fluorescence = SpectralData(fluorophore_intensities, wn)
-
+    abundances = np.ones_like(decay_rates)
     return DecompositionResult(
         raman=raman,
         rates=decay_rates,
+        abundances=abundances,
         fluorophore_spectra=fluorescence,
-        mse=
-        polynomial_coeffs=polynomial_coeffs,
+        log_polynomial_coeffs=log_polynomial_coeffs,
+        poly_norm_mean=wn_mean,
+        poly_norm_std=wn_std,
     )
 
 
 def decompose(
-    data,  # Union[np.ndarray, SpectralData]
+    data: Union[SpectralData, np.ndarray],
     time_points: Optional[np.ndarray] = None,
     wavenumbers: Optional[np.ndarray] = None,
     n_fluorophores: int = 2,
     rate_bounds: tuple = (0.01, 20),
     maxiter: int = 100,
-    seed: int = 42,
+    seed: Optional[int] = None,
     polish: bool = True,
     verbose: bool = False,
     use_polynomial_bases: bool = False,  # Default: polynomial constraint (slower but correct!)
@@ -361,9 +371,7 @@ def decompose(
             wavenumbers = np.arange(data.shape[1])
 
         spectral_data = SpectralData(
-            intensities=data,
-            wavenumbers=wavenumbers,
-            time_values=time_points
+            intensities=data, wavenumbers=wavenumbers, time_values=time_points
         )
         t = time_points
 
@@ -372,21 +380,48 @@ def decompose(
 
     # Choose solver based on use_polynomial_bases flag, this will determine our objective function
     if use_polynomial_bases:
+
         def solve_given_rates(rates):
             poly_result = solve_spectra_with_polynomial_bases(
                 spectral_data, t, rates, polynomial_degree
             )
             decay = np.exp(-rates[:, None] * t[None, :])
-            Y_recon = poly_result.raman.intensities[None, :] + decay.T @ poly_result.fluorophore_spectra.intensities
+            Y_recon = (
+                poly_result.raman.intensities[None, :]
+                + decay.T @ poly_result.fluorophore_spectra.intensities
+            )
             mse = np.mean((spectral_data.intensities - Y_recon) ** 2)
-            return poly_result.raman, poly_result.fluorophore_spectra, poly_result.polynomial_coeffs, mse
+            return (
+                poly_result.raman,
+                poly_result.fluorophore_spectra,
+                poly_result.log_polynomial_coeffs,
+                mse,
+            )
+
     else:
+
         def solve_given_rates(rates):
             result = solve_spectra_given_rates(spectral_data, t, rates)
             decay = np.exp(-rates[:, None] * t[None, :])
-            Y_recon = result.raman.intensities[None, :] + decay.T @ result.fluorophore_spectra.intensities
+            Y_recon = (
+                result.raman.intensities[None, :]
+                + decay.T @ result.fluorophore_spectra.intensities
+            )
+            # Y_recon = reconstruct_time_series(
+            #     result.raman.intensities,
+            #     result.fluorophore_spectra.intensities,
+            #     np.ones_like(decay),
+            #     decay,
+            #     t,
+            # )
             mse = np.mean((spectral_data.intensities - Y_recon) ** 2)
-            return result.raman, result.fluorophore_spectra, None, mse  # No poly_coeffs for flexible bases
+            return (
+                result.raman,
+                result.fluorophore_spectra,
+                None,
+                mse,
+            )  # No poly_coeffs for flexible bases
+
     def objective(rates):
         *_, mse = solve_given_rates(rates)
         return mse
@@ -403,14 +438,17 @@ def decompose(
     )
 
     best_rates = np.clip(result.x, rate_bounds[0], rate_bounds[1])
-    raman, fluor, poly_coeffs, mse = solve_given_rates(best_rates)
-
+    raman, fluor, log_poly_coeffs, mse = solve_given_rates(best_rates)
+    # print(f"Best rates shape: {best_rates.shape}")
+    abundances = np.ones_like(best_rates)
+    # print(abundances.shape)
     return DecompositionResult(
         raman=raman,
         rates=best_rates,
+        abundances=abundances,
         fluorophore_spectra=fluor,
         mse=float(mse),
-        polynomial_coeffs=poly_coeffs,
+        log_polynomial_coeffs=log_poly_coeffs,
     )
 
 
@@ -439,7 +477,10 @@ def decompose_with_known_rates(
     """
     result = solve_spectra_given_rates(Y, time_points, rates)
     decay = np.exp(-rates[:, None] * time_points[None, :])
-    Y_recon = result.raman.intensities[None, :] + decay.T @ result.fluorophore_spectra.intensities
+    Y_recon = (
+        result.raman.intensities[None, :]
+        + decay.T @ result.fluorophore_spectra.intensities
+    )
     mse = np.mean((Y - Y_recon) ** 2)
 
     return DecompositionResult(
