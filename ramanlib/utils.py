@@ -13,6 +13,7 @@ def wavenumber_positional_encoding(
     wavenumbers: np.ndarray,
     d_model: int,
     scale: float = 0.1,
+    freq_scale: float = 1000,
     normalize: bool = True,
     global_range: Optional[Tuple[float, float]] = None,
 ) -> np.ndarray:
@@ -81,6 +82,8 @@ def wavenumber_positional_encoding(
     else:
         position = wavenumbers[:, np.newaxis]
 
+    if normalize:
+        position = position * freq_scale
     # Frequency scaling factors
     div_term = np.exp(np.arange(0, d_model, 2) * -(np.log(10000.0) / d_model))
 
@@ -97,6 +100,7 @@ def add_positional_encoding(
     wavenumbers: Optional[np.ndarray] = None,
     d_model: int = 6,
     scale: float = 0.1,
+    freq_scale: float = 1000,
     normalize: bool = True,
     per_sample: bool = False,
 ) -> np.ndarray:
@@ -171,7 +175,7 @@ def add_positional_encoding(
     # Expand intensities to (n_samples, n_wavenumbers, 1)
     expanded = intensities[..., np.newaxis]
 
-    # Compute global range for normalization (CRITICAL for per-sample calibrations)
+    # Compute global range for normalization
     if normalize and wn.ndim == 2:
         global_min = np.min(wn)
         global_max = np.max(wn)
@@ -189,7 +193,7 @@ def add_positional_encoding(
         pe_all = np.zeros((n_samples, n_wavenumbers, d_model))
         for i in range(n_samples):
             pe_all[i] = wavenumber_positional_encoding(
-                wn[i], d_model, scale, normalize, global_range
+                wn[i], d_model, scale, freq_scale, normalize, global_range
             )
     else:
         # Shared wavenumber axis
@@ -200,7 +204,7 @@ def add_positional_encoding(
             )
             # Use first sample's axis as representative
             wn = wn[0]
-        pe = wavenumber_positional_encoding(wn, d_model, scale, normalize, global_range)
+        pe = wavenumber_positional_encoding(wn, d_model, scale, freq_scale, normalize, global_range)
         pe_all = np.broadcast_to(pe[None, :, :], (n_samples, n_wavenumbers, d_model))
 
     # Concatenate intensity + PE
