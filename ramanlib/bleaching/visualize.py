@@ -700,7 +700,7 @@ def plot_temporal_decomposition(
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity")
     ax.set_title("Total Fluorescence Decay")
-    ax.legend(loc="upper right", fontsize=8)
+    # ax.legend(loc="upper right", fontsize=8)
     ax.grid(True, alpha=0.3)
 
     # Bottom left: Individual fluorophore decay curves

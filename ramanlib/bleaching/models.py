@@ -117,7 +117,11 @@ class PhysicsDecomposition(nn.Module):
                 )
             elif initial_bases is not None:
                 # Use RAW wavenumbers (fit_polynomial_bases handles normalization)
-                wn_np = wavenumber_axis.cpu().numpy() if isinstance(wavenumber_axis, torch.Tensor) else wavenumber_axis
+                wn_np = (
+                    wavenumber_axis.cpu().numpy()
+                    if isinstance(wavenumber_axis, torch.Tensor)
+                    else wavenumber_axis
+                )
                 bases_np = (
                     initial_bases.cpu().numpy()
                     if isinstance(initial_bases, torch.Tensor)
@@ -221,12 +225,30 @@ class PhysicsDecomposition(nn.Module):
 
     def forward(self) -> torch.Tensor:
         """Reconstruct time series from parameters."""
-        return reconstruct_time_series_torch(
-            self.raman_spectrum,
-            self.fluorophore_bases,
-            self.abundances,
-            self.decay_rates,
-            self.time_values,
+
+        # Add batch dimension for reconstruction function (expects [B, W])
+
+        # Add batch dim to raman, decay rates, abundances
+        raman_spectrum = self.raman_spectrum.unsqueeze(0)
+        abundances = self.abundances.unsqueeze(0)
+        decay_rates = self.decay_rates.unsqueeze(0)
+
+        # print("Shapes of parameters:")
+        # print(f"Raman: {raman_spectrum.shape}")
+        # print(f"Bases: {self.fluorophore_bases.shape}")
+        # print(f"Abundances: {abundances.shape}")
+        # print(f"Decay rates: {decay_rates.shape}")
+
+        return (
+            reconstruct_time_series_torch(
+                raman_spectrum,
+                self.fluorophore_bases,
+                abundances,
+                decay_rates,
+                self.time_values,
+            )
+            .squeeze(0)
+            .T  # Remove batch dim, transpose to [T, W]
         )
 
     def get_decomposition(self) -> DecompositionResult:
@@ -429,6 +451,8 @@ def fit_physics_model(
     data_tensor = torch.tensor(
         data.intensities[:first_times, :], dtype=torch.float32, device=device
     )
+    print(f"Data tensor shape: {data_tensor.shape}")
+
     time_tensor = torch.tensor(
         data.time_values[:first_times], dtype=torch.float32, device=device
     )
@@ -474,7 +498,7 @@ def fit_physics_model(
     for epoch in range(n_epochs):
         optimizer.zero_grad()
         reconstruction = model()
-
+        # print(f"Reconstruction shape: {reconstruction.shape}")
         # Main MSE loss
         mse_loss = torch.mean(
             (reconstruction[:first_times] - data_tensor[:first_times]) ** 2
@@ -485,7 +509,7 @@ def fit_physics_model(
         # print(mse_loss)
 
         total_loss = mse_loss
-
+        # print(f"Total loss so far: {total_loss.item()}")
         # if use_physics_losses:
         #     physics_loss_values = {}
 

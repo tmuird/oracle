@@ -6,7 +6,7 @@ Physics model:
 
 This module provides functions shared by:
 - decompose.py (DE-based decomposition)
-- models.py (NN-based decomposition)  
+- models.py (NN-based decomposition)
 - generate.py (synthetic data generation)
 """
 
@@ -15,6 +15,7 @@ import numpy as np
 
 try:
     import torch
+
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
@@ -23,6 +24,7 @@ except ImportError:
 # =============================================================================
 # Wavenumber Normalization
 # =============================================================================
+
 
 def normalize_wavenumbers(
     wavenumbers: np.ndarray,
@@ -59,6 +61,7 @@ def normalize_wavenumbers(
 # Vandermonde Matrix
 # =============================================================================
 
+
 def build_vandermonde(wn_norm: np.ndarray, degree: int) -> np.ndarray:
     """
     Build Vandermonde matrix for polynomial evaluation.
@@ -85,6 +88,7 @@ def build_vandermonde(wn_norm: np.ndarray, degree: int) -> np.ndarray:
 # L2 Normalization
 # =============================================================================
 
+
 def l2_normalize(
     spectra: np.ndarray,
     axis: int = -1,
@@ -98,6 +102,7 @@ def l2_normalize(
 # =============================================================================
 # Forward Model
 # =============================================================================
+
 
 def reconstruct_time_series(
     raman: np.ndarray,
@@ -129,18 +134,25 @@ def reconstruct_time_series(
     reconstruction : np.ndarray
         Shape (n_timepoints, n_wavenumbers)
     """
-    print("Shapes:", raman.shape, bases.shape, abundances.shape, decay_rates.shape, time_values.shape)
+    print(
+        "Shapes:",
+        raman.shape,
+        bases.shape,
+        abundances.shape,
+        decay_rates.shape,
+        time_values.shape,
+    )
     decay_factors = np.exp(-decay_rates[np.newaxis, :] * time_values[:, np.newaxis])
     # print("decay_factors.shape:", decay_factors.shape)
-    weighted_bases = abundances[:, np.newaxis] * bases # 3,1 * 3,630
+    weighted_bases = abundances[:, np.newaxis] * bases  # 3,1 * 3,630
     fluorescence = np.matmul(decay_factors, weighted_bases)
     return raman + fluorescence
-
 
 
 # =============================================================================
 # Polynomial Fitting
 # =============================================================================
+
 
 def fit_polynomial_bases(
     bases: np.ndarray,
@@ -230,13 +242,12 @@ def evaluate_polynomial_bases(
     return bases
 
 
-
-
 # =============================================================================
 # PyTorch Versions (for NN models)
 # =============================================================================
 
 if TORCH_AVAILABLE:
+
     def normalize_wavenumbers_torch(
         wavenumbers: "torch.Tensor",
         wn_min: Optional["torch.Tensor"] = None,
@@ -250,7 +261,7 @@ if TORCH_AVAILABLE:
 
         wn_norm = 2.0 * (wavenumbers - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
         return wn_norm, wn_min, wn_max
-    
+
     def evaluate_polynomial_bases_torch(
         log_poly_coeffs: "torch.Tensor",
         wavenumbers: "torch.Tensor",
@@ -297,8 +308,6 @@ if TORCH_AVAILABLE:
 
         return bases
 
-
-
     def build_vandermonde_torch(
         wn_norm: "torch.Tensor",
         degree: int,
@@ -317,17 +326,55 @@ if TORCH_AVAILABLE:
         return spectra / (norm + eps)
 
     def reconstruct_time_series_torch(
-        raman: "torch.Tensor",
-        bases: "torch.Tensor",
-        abundances: "torch.Tensor",
-        decay_rates: "torch.Tensor",
-        time_values: "torch.Tensor",
-    ) -> "torch.Tensor":
-        """Reconstruct bleaching time series (PyTorch version)."""
-        raman_expanded = raman.unsqueeze(0)
-        decay_factors = torch.exp(-decay_rates.unsqueeze(0) * time_values.unsqueeze(1))
-        weighted_bases = abundances.unsqueeze(1) * bases
-        fluorescence = torch.matmul(decay_factors, weighted_bases)
-        return raman_expanded + fluorescence
+        raman: torch.Tensor,  # [Batch, Wavenumbers]
+        bases: torch.Tensor,  # [Fluors, Wavenumbers] (Global Parameter)
+        abundances: torch.Tensor,  # [Batch, Fluors]
+        decay_rates: torch.Tensor,  # [Batch, Fluors]
+        time_values: torch.Tensor,  # [Timepoints] (Buffer)
+    ) -> torch.Tensor:
+        """
+        Batch-Safe Physics Reconstruction using Matrix Multiplication.
 
+        Shapes:
+        - Input Raman: [B, W]
+        - Output:      [B, W, T] (Standard image format for CNNs) or [B, T, W] (Sequence format)
+        """
 
+        # 1. Create Decay Matrix [Batch, Time, Fluors]
+        # We want exp(-lambda * t)
+
+        # decay_rates: [B, F] -> [B, 1, F]
+        lam = decay_rates.unsqueeze(1)
+
+        # time_values: [T] -> [1, T, 1]
+        t = time_values.view(1, -1, 1)
+
+        # Result: [B, T, F]
+        # This gives the decay curve for every fluorophore in every batch sample
+        decay_matrix = torch.exp(-lam * t)
+
+        # 2. Create Weighted Bases [Batch, Fluors, Wavenumbers]
+        # abundances: [B, F] -> [B, F, 1]
+        w = abundances.unsqueeze(2)
+
+        # bases: [F, W] -> [1, F, W] (Broadcasts to Batch size)
+        B = bases.unsqueeze(0)
+
+        # Result: [B, F, W]
+        weighted_bases = w * B
+
+        # 3. Matrix Multiplication
+        # [B, T, F] @ [B, F, W] -> [B, T, W]
+        # For each sample, we sum over Fluors (F) efficiently
+        fluorescence = torch.matmul(decay_matrix, weighted_bases)
+
+        # 4. Add Raman
+        # Raman is [B, W]. We need [B, T, W]
+        # We broadcast Raman across time
+        raman_expanded = raman.unsqueeze(1)  # [B, 1, W]
+
+        total_signal = fluorescence + raman_expanded  # [B, T, W]
+
+        # Optional: Transpose if you need [Batch, Wavenumbers, Time]
+        # Your VAE input was [B, W, T], so we likely want to return that.
+        return total_signal.transpose(1, 2)
