@@ -15,6 +15,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 
 from ramanlib.bleaching.decompose import DecompositionResult
@@ -45,7 +46,8 @@ class PhysicsDecomposition(nn.Module):
         n_fluorophores: int = 3,
         basis_type: str = "polynomial",
         polynomial_degree: int = 3,
-        min_decay_rate: float = 0.01,
+        min_decay_rate: float = 0.1,
+        max_decay_rate: float = 10.0,
         initial_abundances: Optional[np.ndarray] = None,
         initial_rates: Optional[np.ndarray] = None,
         initial_bases: Optional[np.ndarray] = None,
@@ -61,6 +63,7 @@ class PhysicsDecomposition(nn.Module):
         self.basis_type = basis_type
         self.polynomial_degree = polynomial_degree
         self.min_decay_rate = min_decay_rate
+        self.max_decay_rate = max_decay_rate
 
         wn_mu = wavenumber_axis.mean()
         wn_std = wavenumber_axis.std()
@@ -74,10 +77,11 @@ class PhysicsDecomposition(nn.Module):
         # Time axis
         self.register_buffer("time_values", time_values.to(device))
 
-        # Raman spectrum (log-space)
+        # Raman spectrum (log-space: unbounded positive via exp)
         if initial_raman is not None:
+            raman_tensor = self._to_tensor(initial_raman, device)
             self.raman = nn.Parameter(
-                torch.log(self._to_tensor(initial_raman, device) + 1e-8),
+                torch.log(raman_tensor + 1e-8),
                 requires_grad=False,
             )
         else:
@@ -90,7 +94,8 @@ class PhysicsDecomposition(nn.Module):
             if initial_bases is not None:
                 bases_tensor = self._to_tensor(initial_bases, device)
                 self.fluorophore_bases_raw = nn.Parameter(
-                    torch.log(bases_tensor + 1e-8), requires_grad=False
+                    torch.log(bases_tensor + 1e-8),
+                    requires_grad=False
                 )
             else:
                 self.fluorophore_bases_raw = nn.Parameter(
@@ -162,29 +167,37 @@ class PhysicsDecomposition(nn.Module):
         else:
             raise ValueError(f"Unknown basis_type: {basis_type}")
 
-        # Abundances (log-space)
+        # Abundances (log-space: unbounded positive via exp)
         if initial_abundances is not None:
             abund_tensor = self._to_tensor(initial_abundances, device)
             self.abundances_raw = nn.Parameter(
-                torch.log(abund_tensor + 1e-8), requires_grad=False
+                torch.log(abund_tensor + 1e-8),
+                requires_grad=False,
             )
         else:
             self.abundances_raw = nn.Parameter(
                 torch.zeros(n_fluorophores, device=device)
             )
 
-        # Decay rates (log-space, with floor)
+        # Decay rates (sigmoid-space for bounded [min, max] range)
         if initial_rates is not None:
             rates_tensor = self._to_tensor(initial_rates, device)
-            adjusted = rates_tensor - min_decay_rate
-            if torch.any(adjusted <= 0):
+            if torch.any(rates_tensor < min_decay_rate) or torch.any(rates_tensor > max_decay_rate):
                 raise ValueError(
-                    f"initial_rates must be > min_decay_rate ({min_decay_rate})"
+                    f"initial_rates must be in [{min_decay_rate}, {max_decay_rate}]"
                 )
+            # Convert rates to normalized [0, 1] then to logit space
+            rate_range = max_decay_rate - min_decay_rate
+            normalized = (rates_tensor - min_decay_rate) / rate_range
+            # Inverse sigmoid (logit): logit(p) = log(p / (1 - p))
+            # Clamp to avoid inf at boundaries
+            normalized_clamped = torch.clamp(normalized, 1e-6, 1 - 1e-6)
             self.decay_rates_raw = nn.Parameter(
-                torch.log(adjusted + 1e-8), requires_grad=False
+                torch.log(normalized_clamped / (1 - normalized_clamped)),
+                requires_grad=False,
             )
         else:
+            # Initialize in logit space near center (logit(0.5) = 0)
             self.decay_rates_raw = nn.Parameter(
                 torch.randn(n_fluorophores, device=device) * 0.1
             )
@@ -213,15 +226,20 @@ class PhysicsDecomposition(nn.Module):
 
     @property
     def raman_spectrum(self) -> torch.Tensor:
+        """Raman spectrum - unbounded positive via exp."""
         return torch.exp(self.raman)
 
     @property
     def abundances(self) -> torch.Tensor:
+        """Abundances - unbounded positive via exp."""
         return torch.exp(self.abundances_raw)
 
     @property
     def decay_rates(self) -> torch.Tensor:
-        return torch.exp(self.decay_rates_raw) + self.min_decay_rate
+        """Decay rates - bounded in [min, max] via sigmoid."""
+        rate_range = self.max_decay_rate - self.min_decay_rate
+        normalized = torch.sigmoid(self.decay_rates_raw)  # → [0, 1]
+        return self.min_decay_rate + rate_range * normalized
 
     def forward(self) -> torch.Tensor:
         """Reconstruct time series from parameters."""
@@ -389,6 +407,8 @@ def fit_physics_model(
     n_epochs: int = 5000,
     lr: float = 0.01,
     first_times: Optional[int] = None,
+    min_decay_rate: float = 0.1,
+    max_decay_rate: float = 10.0,
     initial_rates: Optional[np.ndarray] = None,
     initial_bases: Optional[np.ndarray] = None,
     initial_raman: Optional[np.ndarray] = None,
@@ -470,6 +490,8 @@ def fit_physics_model(
         time_values=time_tensor,
         wavenumber_axis=wn_tensor,
         n_fluorophores=n_fluorophores,
+        min_decay_rate=min_decay_rate,
+        max_decay_rate=max_decay_rate,
         initial_rates=initial_rates,
         initial_bases=initial_bases,
         initial_raman=initial_raman,
