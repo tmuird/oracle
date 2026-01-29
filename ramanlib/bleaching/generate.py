@@ -11,6 +11,7 @@ import xarray as xr
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List
 from scipy.interpolate import UnivariateSpline
+from skimage.metrics import peak_signal_noise_ratio
 
 from ramanlib.bleaching.physics import (
     fit_polynomial_bases,
@@ -59,7 +60,11 @@ class SyntheticConfig:
     fr_ratio_max: float = 15.0
 
     # Noise parameters
+    # WARNING: poisson_noise_scale acts as GAIN (higher = LESS noise, not more!)
+    # Physically: photon detection gain. Range: 0.1 (high noise) to 100 (low noise)
     poisson_noise_scale: float = 1.0
+    # Gaussian noise: read noise multiplier (higher = more noise)
+    # Range: 0.1 (low) to 10 (high). Baseline is 5 counts RMS.
     gaussian_noise_scale: float = 0.02
     noise_type: str = "poisson_gaussian"
 
@@ -165,14 +170,14 @@ class SyntheticBleachingDataset:
         ref_wavenumbers = (
             self.wavenumbers[0] if self.wavenumbers.ndim == 2 else self.wavenumbers
         )
-
+        self.fluorophore_names: list[list[str]] = []
         if config.use_shared_bases:
 
             # self.fluorophore_names = np.empty(self.config.n_fluorophores)
             self.shared_bases = self._generate_fluorophore_bases(ref_wavenumbers)
         # if fluorophore_xr is not None and "fluorophore_name" in fluorophore_xr:
         #     if self.config.use_shared_bases:
-        self.fluorophore_names: list[list[str]] = []
+        
 
         # Storage for polynomial normalization stats
         self.poly_norm_mean: Optional[float] = None
@@ -225,9 +230,16 @@ class SyntheticBleachingDataset:
         else:
             indices = self.rng.choice(n_available, size=n_f, replace=False)
         if "fluorophore_name" in fluor_ds:
-            self.fluorophore_names.append(
-                fluor_ds.isel(sample=indices).fluorophore_name.values
-            )
+            if self.config.use_shared_bases:
+                # if shared we need to stack / copy so there is one set of bases per sample
+                for i in range(self.config.n_samples):
+                    self.fluorophore_names.append(
+                        fluor_ds.isel(sample=indices).fluorophore_name.values
+                    )
+            else:    
+                self.fluorophore_names.append(
+                    fluor_ds.isel(sample=indices).fluorophore_name.values
+                )
 
         bases = np.zeros((n_f, len(target_wavenumbers)))
 
@@ -413,26 +425,66 @@ class SyntheticBleachingDataset:
         if self.config.noise_type == "none":
             return signal
 
+        elif self.config.noise_type == "poisson":
+            # Poisson (shot) noise: variance = mean
+            # Scale controls SNR: higher scale = more detected photons = less relative noise
+            # Physically: scale represents detector gain or integration time
+            scaled = np.maximum(signal * self.config.poisson_noise_scale, 0)
+            noisy_counts = self.rng.poisson(scaled)
+            return noisy_counts / self.config.poisson_noise_scale
+
         elif self.config.noise_type == "gaussian":
-            noise_std = signal.mean() * self.config.gaussian_noise_scale
+            # Simple additive Gaussian noise (not physically motivated for counting)
+            noise_std = signal.std() * self.config.gaussian_noise_scale
             noise = self.rng.normal(0, noise_std, signal.shape)
             return signal + noise
 
         elif self.config.noise_type == "poisson_gaussian":
-            signal_mean = signal.mean()
-            if signal_mean > 0:
-                scaled_signal = np.maximum(signal * self.config.poisson_noise_scale, 0)
-                poisson_counts = self.rng.poisson(scaled_signal)
-                poisson_signal = poisson_counts / self.config.poisson_noise_scale
-            else:
-                poisson_signal = signal
+            # Realistic detector noise model: shot noise + read noise
 
-            read_noise_std = signal.mean() * self.config.gaussian_noise_scale
+            # 1. Shot noise (Poisson) - scales with signal
+            # Higher poisson_noise_scale = more photons detected = lower relative noise
+            scaled = np.maximum(signal * self.config.poisson_noise_scale, 0)
+            shot_noisy = self.rng.poisson(scaled) / self.config.poisson_noise_scale
+
+            # 2. Read noise (Gaussian) - constant, detector property
+            # Typical CCD: ~5 counts RMS. Scale this by gaussian_noise_scale
+            read_noise_baseline = 5.0  # counts RMS
+            read_noise_std = read_noise_baseline * self.config.gaussian_noise_scale
             read_noise = self.rng.normal(0, read_noise_std, signal.shape)
-            return poisson_signal + read_noise
+
+            return np.maximum(shot_noisy + read_noise, 0)  # No negative counts
 
         else:
             raise ValueError(f"Unknown noise type: {self.config.noise_type}")
+
+    def calculate_noise_metrics(self, clean: np.ndarray, noisy: np.ndarray) -> dict:
+        """
+        Calculate all noise metrics between clean and noisy data.
+
+        Uses skimage for PSNR, numpy for SNR.
+
+        Returns:
+            dict with psnr_db, snr_db, noise_std, and noise components
+        """
+        noise = noisy - clean
+
+        # PSNR (standard implementation from skimage)
+        data_range = clean.max() - clean.min()
+        psnr_db = peak_signal_noise_ratio(clean, noisy, data_range=data_range)
+
+        # SNR (signal power / noise power)
+        signal_power = np.mean(clean ** 2)
+        noise_power = np.mean(noise ** 2)
+        snr_db = 10 * np.log10(signal_power / noise_power) if noise_power > 0 else float('inf')
+
+        return {
+            'psnr_db': psnr_db,
+            'snr_db': snr_db,
+            'noise_std': np.std(noise),
+            'noise_rms': np.sqrt(noise_power),
+            'signal_mean': np.mean(clean),
+        }
 
     def _reconstruct_time_series(
         self,
@@ -478,9 +530,9 @@ class SyntheticBleachingDataset:
         species_list = []
 
         if self.config.use_shared_bases:
-            bases_storage = self.shared_bases
+            bases_storage_temp = self.shared_bases
         else:
-            bases_storage = []
+            bases_storage_temp: List[np.ndarray] = []
 
         print(f"\nGenerating {n_samples} synthetic samples...")
 
@@ -504,7 +556,7 @@ class SyntheticBleachingDataset:
                 bases = self.shared_bases
             else:
                 bases = self._generate_fluorophore_bases(wn)
-                bases_storage.append(bases)
+                bases_storage_temp.append(bases)
 
             decay_rates = self._generate_decay_rates()
             abundances = self._generate_abundances(raman, bases)
@@ -601,7 +653,7 @@ class SyntheticBleachingDataset:
         if self.config.use_shared_bases:
             ds["fluorophore_bases_gt"] = (
                 ["fluorophore", "wavenumber"],
-                bases_storage,
+                bases_storage_temp,
                 {"long_name": "Shared fluorophore basis spectra"},
             )
             if self.log_poly_coeffs is not None:
@@ -614,10 +666,10 @@ class SyntheticBleachingDataset:
                     },
                 )
         else:
-            bases_storage = np.array(bases_storage, dtype=np.float32)
+            bases_storage_array = np.array(bases_storage_temp, dtype=np.float32)
             ds["fluorophore_bases_gt"] = (
                 ["sample", "fluorophore", "wavenumber"],
-                bases_storage,
+                bases_storage_array,
                 {"long_name": "Per-sample fluorophore basis spectra"},
             )
 

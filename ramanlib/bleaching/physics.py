@@ -292,7 +292,7 @@ if TORCH_AVAILABLE:
         """
         degree = log_poly_coeffs.shape[1] - 1
 
-        # Normalize wavenumbers using provided stats (or compute if not provided)
+        # Normalise wavenumbers using provided stats (or compute if not provided). This ensures consistency with training.
         if wn_mean is None:
             wn_mean = float(wavenumbers.mean().item())
         if wn_std is None:
