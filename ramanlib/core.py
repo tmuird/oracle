@@ -29,6 +29,38 @@ except ImportError:
     HAS_XARRAY = False
 
 
+def _label_to_string(label) -> str:
+    """
+    Convert label to string, handling arrays/None gracefully.
+
+    Parameters
+    ----------
+    label : str, np.ndarray, list, or None
+        Label that may be a string, array, list, or None
+
+    Returns
+    -------
+    str
+        Safe string representation of the label
+    """
+    if label is None:
+        return "data"
+    elif isinstance(label, (np.ndarray, list)):
+        if len(label) == 0:
+            return "data"
+        elif len(label) == 1:
+            return str(label[0])
+        else:
+            # Multiple labels - use first or generic description
+            return (
+                str(label[0])
+                if hasattr(label[0], "__str__")
+                else f"data_{len(label)}_samples"
+            )
+    else:
+        return str(label)
+
+
 @dataclass
 class SpectralData:
     """
@@ -228,7 +260,7 @@ class SpectralData:
             return SpectralData(
                 intensities=processed.spectral_data,
                 wavenumbers=processed.spectral_axis,
-                label=f"{self.label or 'data'} (preprocessed)",
+                label=f"{_label_to_string(self.label)} (preprocessed)",
                 time_values=self.time_values,
             )
         else:
@@ -243,7 +275,7 @@ class SpectralData:
             return SpectralData(
                 intensities=np.array(processed_intensities),
                 wavenumbers=self.wavenumbers,
-                label=f"{self.label or 'data'} (preprocessed)",
+                label=f"{_label_to_string(self.label)} (preprocessed)",
                 time_values=self.time_values,
             )
 
@@ -268,12 +300,10 @@ class SpectralData:
 
         methods = {
             "iarpls": rp.preprocessing.baseline.IARPLS,
-            "als": rp.preprocessing.baseline.ALS,
             "arpls": rp.preprocessing.baseline.ARPLS,
             "drpls": rp.preprocessing.baseline.DRPLS,
             "aspls": rp.preprocessing.baseline.ASPLS,
-            "polynomial": rp.preprocessing.baseline.Polynomial,
-            "morphological": rp.preprocessing.baseline.Morphological,
+            "imodpoly": rp.preprocessing.baseline.IModPoly,
         }
 
         if method.lower() not in methods:
@@ -355,7 +385,7 @@ class SpectralData:
             return SpectralData(
                 intensities=self.intensities[:, mask],
                 wavenumbers=self.wavenumbers[mask],
-                label=f"{self.label or 'data'} (cropped)",
+                label=f"{_label_to_string(self.label)} (cropped)",
                 time_values=self.time_values,
             )
         else:
@@ -371,7 +401,7 @@ class SpectralData:
             return SpectralData(
                 intensities=np.array(cropped_intensities),
                 wavenumbers=np.array(cropped_wavenumbers),
-                label=f"{self.label or 'data'} (cropped)",
+                label=f"{_label_to_string(self.label)} (cropped)",
                 time_values=self.time_values,
             )
 
@@ -439,7 +469,7 @@ class SpectralData:
         return SpectralData(
             intensities=normalized,
             wavenumbers=self.wavenumbers,
-            label=f"{self.label or 'data'} ({method}-norm)",
+            label=f"{_label_to_string(self.label)} ({method}-norm)",
             time_values=self.time_values,
         )
 

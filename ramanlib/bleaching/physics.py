@@ -12,7 +12,7 @@ This module provides functions shared by:
 
 from typing import Tuple, Optional
 import numpy as np
-
+import torch.nn.functional as F
 try:
     import torch
 
@@ -84,9 +84,7 @@ def build_vandermonde(wn_norm: np.ndarray, degree: int) -> np.ndarray:
     return np.stack([wn_norm**k for k in range(n_coeffs)], axis=1)
 
 
-# =============================================================================
 # L2 Normalization
-# =============================================================================
 
 
 def l2_normalize(
@@ -99,9 +97,7 @@ def l2_normalize(
     return spectra / (norm + eps)
 
 
-# =============================================================================
 # Forward Model
-# =============================================================================
 
 
 def reconstruct_time_series(
@@ -134,25 +130,13 @@ def reconstruct_time_series(
     reconstruction : np.ndarray
         Shape (n_timepoints, n_wavenumbers)
     """
-    print(
-        "Shapes:",
-        raman.shape,
-        bases.shape,
-        abundances.shape,
-        decay_rates.shape,
-        time_values.shape,
-    )
     decay_factors = np.exp(-decay_rates[np.newaxis, :] * time_values[:, np.newaxis])
-    # print("decay_factors.shape:", decay_factors.shape)
-    weighted_bases = abundances[:, np.newaxis] * bases  # 3,1 * 3,630
+    weighted_bases = abundances[:, np.newaxis] * bases
     fluorescence = np.matmul(decay_factors, weighted_bases)
     return raman + fluorescence
 
 
-# =============================================================================
 # Polynomial Fitting
-# =============================================================================
-
 
 def fit_polynomial_bases(
     bases: np.ndarray,
@@ -208,9 +192,6 @@ def evaluate_polynomial_bases(
 ) -> np.ndarray:
     """
     Evaluate polynomial fluorophore bases in log-space, then exponentiate.
-
-    B(ν) = exp(Σₖ cₖ · νₙₒᵣₘᵏ)
-
     Parameters
     ----------
     log_poly_coeffs : np.ndarray
@@ -227,7 +208,6 @@ def evaluate_polynomial_bases(
     bases : np.ndarray
         Shape (n_fluorophores, n_wavenumbers)
     """
-    # print(f"log_poly_coeffs.shape: {log_poly_coeffs.shape}")
     if log_poly_coeffs.ndim == 1:
         log_poly_coeffs = log_poly_coeffs[None, :]
     degree = log_poly_coeffs.shape[1] - 1
@@ -270,7 +250,6 @@ if TORCH_AVAILABLE:
     ) -> "torch.Tensor":
         """
         Evaluate polynomial fluorophore bases in log-space, then exponentiate.
-        B(ν) = exp(Σₖ cₖ · νₙₒᵣₘᵏ)
 
         Parameters
         ----------
@@ -351,9 +330,11 @@ if TORCH_AVAILABLE:
 
         # Result: [B, T, F]
         # This gives the decay curve for every fluorophore in every batch sample
+        # print(f"Decay matrix : {lam}")
         decay_matrix = torch.exp(-lam * t)
 
-        # 2. Create Weighted Bases [Batch, Fluors, Wavenumbers]
+        # decay_matrix = decay_matrix / (decay_matrix.mean(dim=1, keepdim=True) + 1e-8) 
+        # Create Weighted Bases [Batch, Fluors, Wavenumbers]
         # abundances: [B, F] -> [B, F, 1]
         w = abundances.unsqueeze(2)
 
@@ -363,18 +344,18 @@ if TORCH_AVAILABLE:
         # Result: [B, F, W]
         weighted_bases = w * B
 
-        # 3. Matrix Multiplication
+        # Matrix Multiplication
         # [B, T, F] @ [B, F, W] -> [B, T, W]
-        # For each sample, we sum over Fluors (F) efficiently
+        # For each sample, we sum over Fluors (F) 
         fluorescence = torch.matmul(decay_matrix, weighted_bases)
 
-        # 4. Add Raman
+        # Add Raman
         # Raman is [B, W]. We need [B, T, W]
         # We broadcast Raman across time
         raman_expanded = raman.unsqueeze(1)  # [B, 1, W]
 
         total_signal = fluorescence + raman_expanded  # [B, T, W]
 
-        # Optional: Transpose if you need [Batch, Wavenumbers, Time]
-        # Your VAE input was [B, W, T], so we likely want to return that.
+
+        # return [B, W, T] for CNN
         return total_signal.transpose(1, 2)

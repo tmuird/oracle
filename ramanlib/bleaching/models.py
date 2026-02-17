@@ -179,27 +179,25 @@ class PhysicsDecomposition(nn.Module):
                 torch.zeros(n_fluorophores, device=device)
             )
 
-        # Decay rates (sigmoid-space for bounded [min, max] range)
+        # Decay rates (softplus for positivity, lower bounded)
         if initial_rates is not None:
             rates_tensor = self._to_tensor(initial_rates, device)
-            if torch.any(rates_tensor < min_decay_rate) or torch.any(rates_tensor > max_decay_rate):
+            if torch.any(rates_tensor < min_decay_rate):
                 raise ValueError(
-                    f"initial_rates must be in [{min_decay_rate}, {max_decay_rate}]"
+                    f"initial_rates must be >= {min_decay_rate}"
                 )
-            # Convert rates to normalized [0, 1] then to logit space
-            rate_range = max_decay_rate - min_decay_rate
-            normalized = (rates_tensor - min_decay_rate) / rate_range
-            # Inverse sigmoid (logit): logit(p) = log(p / (1 - p))
-            # Clamp to avoid inf at boundaries
-            normalized_clamped = torch.clamp(normalized, 1e-6, 1 - 1e-6)
+            # Inverse softplus: log(exp(x) - 1) ≈ x for large x, = log(x) for x near 0
+            # For rates > min, subtract min then take inverse softplus
+            shifted = rates_tensor - min_decay_rate
+            # softplus^{-1}(y) = log(exp(y) - 1), but numerically stable:
             self.decay_rates_raw = nn.Parameter(
-                torch.log(normalized_clamped / (1 - normalized_clamped)),
+                torch.log(torch.expm1(shifted + 1e-8)),
                 requires_grad=False,
             )
         else:
-            # Initialize in logit space near center (logit(0.5) = 0)
+            # Initialize near λ ≈ 1-2 (softplus(0.5) ≈ 0.97)
             self.decay_rates_raw = nn.Parameter(
-                torch.randn(n_fluorophores, device=device) * 0.1
+                torch.randn(n_fluorophores, device=device) * 0.3 + 0.5
             )
 
     @staticmethod
@@ -236,10 +234,10 @@ class PhysicsDecomposition(nn.Module):
 
     @property
     def decay_rates(self) -> torch.Tensor:
-        """Decay rates - bounded in [min, max] via sigmoid."""
-        rate_range = self.max_decay_rate - self.min_decay_rate
-        normalized = torch.sigmoid(self.decay_rates_raw)  # → [0, 1]
-        return self.min_decay_rate + rate_range * normalized
+        """Decay rates - positive via softplus, lower bounded."""
+        # Softplus ensures positivity, shift by minimum
+        # No upper bound - if needed, add soft penalty in loss
+        return F.softplus(self.decay_rates_raw) + self.min_decay_rate
 
     def forward(self) -> torch.Tensor:
         """Reconstruct time series from parameters."""

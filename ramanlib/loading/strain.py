@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pathlib import Path
-from typing import Tuple, Optional, Dict, List
+from typing import Tuple, Optional, Dict, List, Union
 from collections import defaultdict
 import re
 
@@ -111,7 +111,7 @@ class StrainDataset:
         normalise: bool = False,
         crop: Optional[Tuple[float, float]] = None,
         remove_outliers: bool = False,
-        baseline_correction: bool = False,
+        baseline_correction: Union[bool, str] = False,
         despike: bool = False,
         method: str = "l2",
         outlier_mad_threshold: float = 10.0,
@@ -140,8 +140,13 @@ class StrainDataset:
             (min, max) wavenumber range to crop
         remove_outliers : bool
             Remove saturated/dropout spectra
-        baseline_correction : bool
-            Apply polynomial baseline correction
+        baseline_correction : bool or str
+            Baseline correction method. Options:
+            - False: No baseline correction
+            - True or 'modpoly': Modified polynomial (default)
+            - 'airpls': Adaptive Iteratively Reweighted Penalized Least Squares
+            - 'asls': Asymmetric Least Squares
+            - 'imodpoly': Improved Modified Polynomial
         despike : bool
             Apply Whittaker-Hayes despiking
         method : str
@@ -459,11 +464,36 @@ class StrainDataset:
 
         # Post-processing: baseline correction
         if baseline_correction and HAS_RAMANSPY:
-            print("\nApplying IARPLS baseline correction...")
+            # Normalize baseline_correction parameter
+            if baseline_correction is True:
+                baseline_method = 'imodpoly'
+            else:
+                baseline_method = baseline_correction.lower()
+
+            # Map method names to RamanSpy classes
+            method_map = {
+                'modpoly': rp.preprocessing.baseline.ModPoly(),
+                'airpls': lambda: rp.preprocessing.baseline.AIRPLS(lam=1e7),  # Very smooth baseline to minimize negatives
+                'asls': lambda: rp.preprocessing.baseline.ASLS(lam=1e6, p=0.01),
+                'imodpoly': rp.preprocessing.baseline.IModPoly(),
+            }
+
+            if baseline_method not in method_map:
+                raise ValueError(
+                    f"Unknown baseline method '{baseline_method}'. "
+                    f"Options: {list(method_map.keys())}"
+                )
+
+            print(f"\nApplying {baseline_method.upper()} baseline correction...")
             raw_int = ds["intensity_raw"].values
             wns = ds["wavenumber"].values
 
             corrected_data = np.full_like(raw_int, np.nan)
+
+            # Get the baseline correction method
+            baseline_processor = method_map[baseline_method]
+            if callable(baseline_processor) and not hasattr(baseline_processor, 'apply'):
+                baseline_processor = baseline_processor()  # Call lambda to get instance
 
             for s in range(n_samples):
                 sample_axis = wns[s, :]
@@ -472,15 +502,27 @@ class StrainDataset:
                     if not np.isnan(spec).all():
                         container = rp.SpectralContainer(spec[np.newaxis, :], sample_axis)
                         corrected_data[s, t, :] = (
-                            rp.preprocessing.baseline.ModPoly().apply(container).spectral_data[0]
+                            baseline_processor.apply(container).spectral_data[0]
                         )
 
             ds["intensity_baseline_corrected"] = (
                 ["sample", "integration_time", "pixel"],
                 corrected_data.astype(np.float32),
-                {"long_name": "Baseline-corrected Raman intensity"},
+                {"long_name": f"Baseline-corrected Raman intensity ({baseline_method.upper()})"},
             )
-            print("Baseline correction complete.")
+
+            # Clip negative values (artifacts from baseline overcorrection)
+            n_negative = (corrected_data < 0).sum()
+            if n_negative > 0:
+                n_total = corrected_data.size
+                pct_negative = 100 * n_negative / n_total
+                min_value = corrected_data.min()
+                print(f"  WARNING: Found {n_negative:,}/{n_total:,} ({pct_negative:.2f}%) negative values (min={min_value:.2f})")
+                print(f"  Clipping negatives to zero...")
+                corrected_data = np.maximum(corrected_data, 0.0)
+                ds["intensity_baseline_corrected"].values[:] = corrected_data
+
+            print(f"{baseline_method.upper()} baseline correction complete.")
 
         # Post-processing: normalization
         if normalise:
