@@ -13,12 +13,27 @@ where:
 
 from ramanlib.bleaching.physics import (
     reconstruct_time_series,
+    reconstruct_time_series_integrated,
+    reconstruct_time_series_factored,
+    effective_to_physical_abundance,
+    physical_to_effective_amplitude,
     normalize_wavenumbers,
     build_vandermonde,
     l2_normalize,
     fit_polynomial_bases,
     evaluate_polynomial_bases,
 )
+
+try:
+    from ramanlib.bleaching.physics import (
+        reconstruct_time_series_torch,
+        reconstruct_time_series_integrated_torch,
+        reconstruct_time_series_factored_torch,
+        effective_to_physical_abundance_torch,
+        evaluate_polynomial_bases_torch,
+    )
+except ImportError:
+    pass  # PyTorch not available
 
 from ramanlib.bleaching.decompose import (
     DecompositionResult,
@@ -73,6 +88,15 @@ from ramanlib.bleaching.visualize import (
 __all__ = [
     # Physics
     "reconstruct_time_series",
+    "reconstruct_time_series_integrated",
+    "reconstruct_time_series_factored",
+    "effective_to_physical_abundance",
+    "physical_to_effective_amplitude",
+    "reconstruct_time_series_torch",
+    "reconstruct_time_series_integrated_torch",
+    "reconstruct_time_series_factored_torch",
+    "effective_to_physical_abundance_torch",
+    "evaluate_polynomial_bases_torch",
     "normalize_wavenumbers",
     "build_vandermonde",
     "l2_normalize",

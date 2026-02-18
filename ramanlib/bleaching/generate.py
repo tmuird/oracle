@@ -18,6 +18,7 @@ from ramanlib.bleaching.physics import (
     evaluate_polynomial_bases,
     l2_normalize,
     reconstruct_time_series,
+    reconstruct_time_series_integrated,
 )
 
 
@@ -519,17 +520,20 @@ class SyntheticBleachingDataset:
         abundances: np.ndarray,
         decay_rates: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Reconstruct bleaching time series from parameters."""
-        clean = reconstruct_time_series(
-            raman, bases, abundances, decay_rates, self.bleaching_times
+        """Reconstruct bleaching time series using CCD integration model."""
+        clean = reconstruct_time_series_integrated(
+            raman, bases, abundances, decay_rates, self.bleaching_times,
+            frame_duration=self.config.bleaching_interval,
         )
 
         n_t = len(self.bleaching_times)
-        fluorescence_time_series = clean - np.tile(raman, (n_t, 1))
+        # Raman contribution per frame is raman * frame_duration
+        raman_per_frame = raman * self.config.bleaching_interval
+        fluorescence_time_series = clean - np.tile(raman_per_frame, (n_t, 1))
 
         noisy = np.zeros_like(clean)
         for t in range(n_t):
-            noisy[t] = self._add_noise(raman, fluorescence_time_series[t])
+            noisy[t] = self._add_noise(raman_per_frame, fluorescence_time_series[t])
 
         return noisy, clean
 

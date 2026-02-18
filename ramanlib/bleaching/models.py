@@ -23,6 +23,8 @@ from ramanlib.bleaching.physics import (
     fit_polynomial_bases,
     build_vandermonde_torch,
     l2_normalize_torch,
+    reconstruct_time_series_integrated,
+    reconstruct_time_series_integrated_torch,
     reconstruct_time_series_torch,
     evaluate_polynomial_bases_torch,
 )
@@ -94,8 +96,7 @@ class PhysicsDecomposition(nn.Module):
             if initial_bases is not None:
                 bases_tensor = self._to_tensor(initial_bases, device)
                 self.fluorophore_bases_raw = nn.Parameter(
-                    torch.log(bases_tensor + 1e-8),
-                    requires_grad=False
+                    torch.log(bases_tensor + 1e-8), requires_grad=False
                 )
             else:
                 self.fluorophore_bases_raw = nn.Parameter(
@@ -183,9 +184,7 @@ class PhysicsDecomposition(nn.Module):
         if initial_rates is not None:
             rates_tensor = self._to_tensor(initial_rates, device)
             if torch.any(rates_tensor < min_decay_rate):
-                raise ValueError(
-                    f"initial_rates must be >= {min_decay_rate}"
-                )
+                raise ValueError(f"initial_rates must be >= {min_decay_rate}")
             # Inverse softplus: log(exp(x) - 1) ≈ x for large x, = log(x) for x near 0
             # For rates > min, subtract min then take inverse softplus
             shifted = rates_tensor - min_decay_rate

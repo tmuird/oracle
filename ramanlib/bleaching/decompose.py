@@ -13,7 +13,10 @@ from scipy.optimize import differential_evolution, curve_fit, nnls
 from scipy.linalg import lstsq
 
 from ramanlib.core import SpectralData
-from ramanlib.bleaching.physics import reconstruct_time_series
+from ramanlib.bleaching.physics import (
+    reconstruct_time_series,
+    reconstruct_time_series_integrated,
+)
 
 
 @dataclass
@@ -31,6 +34,7 @@ class DecompositionResult:
     )
     poly_norm_mean: Optional[float] = None  # Wavenumber normalization mean
     poly_norm_std: Optional[float] = None  # Wavenumber normalization std
+    frame_duration: Optional[float] = None  # CCD integration time per frame
 
     @property
     def time_constants(self) -> np.ndarray:
@@ -41,6 +45,16 @@ class DecompositionResult:
         """Reconstruct Y(t, ν) from decomposition parameters."""
         if self.abundances is None:
             self.abundances = np.ones(len(self.rates))
+
+        if self.frame_duration is not None:
+            return reconstruct_time_series_integrated(
+                raman=self.raman.intensities,
+                bases=self.fluorophore_spectra.intensities,
+                abundances=self.abundances,
+                decay_rates=self.rates,
+                time_values=time_points,
+                frame_duration=self.frame_duration,
+            )
 
         return reconstruct_time_series(
             raman=self.raman.intensities,
