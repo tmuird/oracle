@@ -7,7 +7,11 @@ import plotly.graph_objects as go
 import ramanspy as rp
 from ramanlib.core import SpectralData
 import pandas as pd
-from ramanlib.bleaching.physics import evaluate_polynomial_bases, fit_polynomial_bases
+from ramanlib.bleaching.physics import (
+    evaluate_polynomial_bases,
+    fit_polynomial_bases,
+    reconstruct_time_series_integrated,
+)
 
 
 def visualize_data_3d(
@@ -92,6 +96,7 @@ def visualise_decomposition(
     reference_raman: Optional[np.ndarray] = None,
     reference_bases: Optional[np.ndarray] = None,
     reference_rates: Optional[np.ndarray] = None,
+    reference_abundances: Optional[np.ndarray] = None,
     normalise: bool = False,
     figsize: Tuple[int, int] = (16, 10),
 ):
@@ -227,9 +232,13 @@ def visualise_decomposition(
                 wavenumbers,
                 bases[i],
                 color=colors[i % len(colors)],
-                label=f"B{i + 1} (τ={tau:.3f}s)",
+                label=f"B{i + 1} (τ={tau:.3f}s) w={abundances[i]:.1f}",
             )
-    if reference_bases is not None:
+    if (
+        reference_bases is not None
+        and reference_rates is not None
+        and reference_abundances is not None
+    ):
         for i in range(reference_bases.shape[0]):
             if reference_rates is not None:
                 tau = 1.0 / reference_rates[i]
@@ -239,7 +248,7 @@ def visualise_decomposition(
                 color=colors[i % len(colors)],
                 linestyle="--",
                 alpha=0.7,
-                label=f"GT B{i + 1} (τ={tau:.3f}s)",
+                label=f"GT B{i + 1} (τ={tau:.3f}s w={reference_abundances[i]:.1f})",
             )
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity (normalized)")
@@ -247,13 +256,29 @@ def visualise_decomposition(
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Plot 4: Decay components over time
+    # Plot 4: Decay components over time (integrated model)
     ax = axes[1, 0]
     total_fluor = np.zeros(n_t)
+
+    # Infer frame duration from decomposition or time axis
+    frame_dur = getattr(decomposition, "frame_duration", None)
+    if frame_dur is None and len(time_values) > 1:
+        frame_dur = float(time_values[1] - time_values[0])
+    if frame_dur is None:
+        frame_dur = 1.0
+
     if bases is not None:
         for i in range(n_fluorophores):
-            decay = np.exp(-rates[i] * time_values)
-            amplitude = abundances[i] * decay * bases[i].mean()
+            # Per-fluorophore contribution over all timepoints via physics function
+            fluor_series = reconstruct_time_series_integrated(
+                raman=np.zeros(bases.shape[1]),
+                bases=bases[i:i+1, :],
+                abundances=np.array([abundances[i]]),
+                decay_rates=np.array([rates[i]]),
+                time_values=time_values,
+                frame_duration=frame_dur,
+            )  # [T, W]
+            amplitude = fluor_series.mean(axis=1)  # mean across wavenumbers
             total_fluor += amplitude
             tau = time_constants[i]
             ax.plot(
@@ -262,13 +287,22 @@ def visualise_decomposition(
                 colors[i % len(colors)],
                 label=f"τ={tau:.3f}s, w={abundances[i]:.1f}",
             )
-    if reference_bases is not None and reference_rates is not None:
+    if (
+        reference_bases is not None
+        and reference_rates is not None
+        and reference_abundances is not None
+    ):
         total_gt_fluor = np.zeros(n_t)
         for i in range(reference_bases.shape[0]):
-            decay = np.exp(-reference_rates[i] * time_values)
-            amplitude = (
-                abundances[i] * decay * reference_bases[i].mean()
-            )  # Using same abundances for GT
+            fluor_series = reconstruct_time_series_integrated(
+                raman=np.zeros(reference_bases.shape[1]),
+                bases=reference_bases[i:i+1, :],
+                abundances=np.array([reference_abundances[i]]),
+                decay_rates=np.array([reference_rates[i]]),
+                time_values=time_values,
+                frame_duration=frame_dur,
+            )
+            amplitude = fluor_series.mean(axis=1)
             total_gt_fluor += amplitude
             ax.plot(
                 time_values,
@@ -276,9 +310,8 @@ def visualise_decomposition(
                 colors[i % len(colors)],
                 linestyle="--",
                 alpha=0.7,
-                label=f"GT τ={1.0/reference_rates[i]:.3f}s",
+                label=f"GT τ={1.0/reference_rates[i]:.3f}s w={reference_abundances[i]:.1f}",
             )
-        # Compute total fluorophore from GT bases
         ax.plot(
             time_values, total_gt_fluor, "r--", linewidth=2, label="Total GT Predicted"
         )
@@ -286,6 +319,7 @@ def visualise_decomposition(
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Mean Fluorescence")
     ax.set_title("Decay Components")
+    # ax.set_xlim(0, 10)
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
@@ -299,29 +333,28 @@ def visualise_decomposition(
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    # Plot 6: Residual over time
+    # Plot 6: MSE over time
     ax = axes[1, 2]
     residuals = Y - reconstruction
-    ax.plot(time_values, np.mean(residuals, axis=1), "k-", label="Mean")
+    mse_first_times = np.mean((residuals[:20, :]) ** 2)
+    mse = np.mean(residuals**2)
+    mse_over_time = np.mean(residuals**2, axis=1)
+    ax.plot(time_values, mse_over_time, "k-", label="MSE")
     ax.fill_between(
         time_values,
-        np.mean(residuals, axis=1) - np.std(residuals, axis=1),
-        np.mean(residuals, axis=1) + np.std(residuals, axis=1),
+        mse_over_time - np.std(residuals**2, axis=1),
+        mse_over_time + np.std(residuals**2, axis=1),
         alpha=0.3,
     )
-    ax.axhline(0, color="r", linestyle="--", alpha=0.5)
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Residual")
-    ax.set_title("Residual Over Time")
+    ax.set_ylabel("MSE")
+    ax.set_title("MSE Over Time")
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.show()
 
     # Print summary
-
-    mse_first_times = np.mean((residuals[:20, :]) ** 2)
-    mse = np.mean(residuals**2)
 
     # r2 = 1 - (mse / np.var(Y))
     corr = np.corrcoef(raman, reference_raman)[0, 1]
@@ -410,11 +443,12 @@ def get_fluorophore_contribution(
     sample_idx: int,
     fluorophore_idx: int,
     time_seconds: Optional[float] = None,
+    frame_duration: Optional[float] = None,
 ) -> np.ndarray:
     """
-    Compute contribution of a single fluorophore at a given time.
+    Compute contribution of a single fluorophore at a given time using CCD integration.
 
-    F_i(ν,t) = wᵢ · Bᵢ(ν) · exp(-λᵢ · t)
+    Integrated: wᵢ · Bᵢ(ν) · [exp(-λᵢ·t) - exp(-λᵢ·(t+T))] / λᵢ
 
     Parameters
     ----------
@@ -425,12 +459,14 @@ def get_fluorophore_contribution(
     fluorophore_idx : int
         Fluorophore index
     time_seconds : float, optional
-        Time in seconds. If None, returns at t=0.
+        Frame start time in seconds. If None, returns at t=0.
+    frame_duration : float, optional
+        CCD integration time. If None, inferred from time axis.
 
     Returns
     -------
     np.ndarray
-        Fluorophore contribution spectrum
+        Fluorophore contribution spectrum (integrated over frame)
     """
     w_i = (
         ds["abundances_gt"].isel(sample=sample_idx, fluorophore=fluorophore_idx).values
@@ -450,20 +486,36 @@ def get_fluorophore_contribution(
 
     if time_seconds is None:
         time_seconds = 0.0
-    decay = np.exp(-λ_i * time_seconds)
 
-    return w_i * B_i * decay
+    if frame_duration is None:
+        time_values = ds["bleaching_time"].values
+        if len(time_values) > 1:
+            frame_duration = float(time_values[1] - time_values[0])
+        else:
+            frame_duration = 0.1
+
+    # Use physics function with single fluorophore, zero Raman
+    result = reconstruct_time_series_integrated(
+        raman=np.zeros_like(B_i),
+        bases=B_i[np.newaxis, :],
+        abundances=np.array([w_i]),
+        decay_rates=np.array([float(λ_i)]),
+        time_values=np.array([time_seconds]),
+        frame_duration=frame_duration,
+    )
+    return result[0]  # [1, W] -> [W]
 
 
 def get_total_fluorescence(
     ds: xr.Dataset,
     sample_idx: int,
     time_seconds: float,
+    frame_duration: Optional[float] = None,
 ) -> np.ndarray:
     """
-    Compute total fluorescence at a given time.
+    Compute total fluorescence at a given time using CCD integration model.
 
-    F(ν,t) = Σᵢ wᵢ · Bᵢ(ν) · exp(-λᵢ · t)
+    F(ν,t) = Σᵢ wᵢ · Bᵢ(ν) · [exp(-λᵢ·t) - exp(-λᵢ·(t+T))] / λᵢ
     """
     n_fluorophores = len(ds["fluorophore"])
 
@@ -474,7 +526,9 @@ def get_total_fluorescence(
 
     total = np.zeros(n_wn)
     for i in range(n_fluorophores):
-        total += get_fluorophore_contribution(ds, sample_idx, i, time_seconds)
+        total += get_fluorophore_contribution(
+            ds, sample_idx, i, time_seconds, frame_duration=frame_duration
+        )
 
     return total
 
@@ -486,6 +540,8 @@ def get_full_decomposition(
 ) -> Dict:
     """
     Get all components of the decomposition at a given time.
+
+    Uses the CCD integration model to match data generation.
 
     Returns
     -------
@@ -505,17 +561,48 @@ def get_full_decomposition(
     time_idx = np.argmin(np.abs(time_values - time_seconds))
     actual_time = time_values[time_idx]
 
+    # Infer frame duration from time axis
+    if len(time_values) > 1:
+        frame_duration = float(time_values[1] - time_values[0])
+    else:
+        frame_duration = 1.0
+
     raman = ds["raman_gt"].isel(sample=sample_idx).values
+    decay_rates = ds["decay_rates_gt"].isel(sample=sample_idx).values
+    abundances = ds["abundances_gt"].isel(sample=sample_idx).values
 
+    # Get bases
+    if "sample" in ds["fluorophore_bases_gt"].dims:
+        bases = ds["fluorophore_bases_gt"].isel(sample=sample_idx).values
+    else:
+        bases = ds["fluorophore_bases_gt"].values
+
+    # Use integrated model for single frame (matches data generation)
+    t_single = np.array([actual_time])
+    reconstructed_frame = reconstruct_time_series_integrated(
+        raman, bases, abundances, decay_rates, t_single,
+        frame_duration=frame_duration,
+    )
+    reconstructed = reconstructed_frame[0]  # [1, W] -> [W]
+
+    # Raman contribution per frame
+    raman_per_frame = raman * frame_duration
+
+    # Total fluorescence = reconstructed - raman_per_frame
+    total_fluor = reconstructed - raman_per_frame
+
+    # Individual fluorophore contributions via physics function
     fluorophores = {}
-    total_fluor = np.zeros_like(raman)
-
     for i in range(n_fluorophores):
-        contrib = get_fluorophore_contribution(ds, sample_idx, i, actual_time)
-        fluorophores[f"fluorophore_{i}"] = contrib
-        total_fluor += contrib
-
-    reconstructed = raman + total_fluor
+        contrib = reconstruct_time_series_integrated(
+            raman=np.zeros(bases.shape[1]),
+            bases=bases[i:i+1, :],
+            abundances=np.array([abundances[i]]),
+            decay_rates=np.array([decay_rates[i]]),
+            time_values=t_single,
+            frame_duration=frame_duration,
+        )
+        fluorophores[f"fluorophore_{i}"] = contrib[0]  # [1, W] -> [W]
 
     observed_clean = (
         ds["intensity_clean"].isel(sample=sample_idx, bleaching_time=time_idx).values
@@ -524,11 +611,8 @@ def get_full_decomposition(
         ds["intensity_raw"].isel(sample=sample_idx, bleaching_time=time_idx).values
     )
 
-    decay_rates = ds["decay_rates_gt"].isel(sample=sample_idx).values
-    abundances = ds["abundances_gt"].isel(sample=sample_idx).values
-
     result = {
-        "raman": raman,
+        "raman": raman_per_frame,
         "total_fluorescence": total_fluor,
         "reconstructed": reconstructed,
         "observed_clean": observed_clean,
@@ -538,6 +622,7 @@ def get_full_decomposition(
         "decay_rates": decay_rates,
         "abundances": abundances,
         "time_constants": 1.0 / decay_rates,
+        "frame_duration": frame_duration,
     }
     result.update(fluorophores)
 
@@ -671,6 +756,12 @@ def plot_temporal_decomposition(
     time_colors = plt.cm.plasma(np.linspace(0, 0.9, n_times))
     fluor_colors = plt.cm.viridis(np.linspace(0.2, 0.8, n_fluorophores))
 
+    # Infer frame duration from time axis
+    if len(time_values) > 1:
+        frame_duration = float(time_values[1] - time_values[0])
+    else:
+        frame_duration = 1.0
+
     # Top left: Observed spectra over time
     ax = axes[0, 0]
     for t_idx, t in enumerate(time_values):
@@ -679,9 +770,10 @@ def plot_temporal_decomposition(
         )
         ax.plot(wn, spectrum, color=time_colors[t_idx], alpha=0.8, label=f"t={t:.2f}s")
 
+    # Raman GT scaled by frame_duration to match integrated observed spectra
     ax.plot(
         wn,
-        ds["raman_gt"].isel(sample=sample_idx).values,
+        ds["raman_gt"].isel(sample=sample_idx).values * frame_duration,
         "k--",
         linewidth=2,
         label="Raman (GT)",
@@ -703,7 +795,7 @@ def plot_temporal_decomposition(
     # ax.legend(loc="upper right", fontsize=8)
     ax.grid(True, alpha=0.3)
 
-    # Bottom left: Individual fluorophore decay curves
+    # Bottom left: Individual fluorophore decay curves (integrated model)
     ax = axes[1, 0]
     decay_rates = ds["decay_rates_gt"].isel(sample=sample_idx).values
     abundances = ds["abundances_gt"].isel(sample=sample_idx).values
@@ -716,10 +808,16 @@ def plot_temporal_decomposition(
         else:
             B_i = ds["fluorophore_bases_gt"].isel(fluorophore=i).values
 
-        intensities = []
-        for t in time_values:
-            contrib = abundances[i] * B_i * np.exp(-decay_rates[i] * t)
-            intensities.append(contrib.mean())
+        # Per-fluorophore contribution over all timepoints via physics function
+        fluor_series = reconstruct_time_series_integrated(
+            raman=np.zeros_like(B_i),
+            bases=B_i[np.newaxis, :],
+            abundances=np.array([abundances[i]]),
+            decay_rates=np.array([decay_rates[i]]),
+            time_values=time_values,
+            frame_duration=frame_duration,
+        )  # [T, W]
+        intensities = fluor_series.mean(axis=1)  # mean across wavenumbers
 
         τ = 1.0 / decay_rates[i]
         ax.plot(
@@ -767,10 +865,7 @@ def plot_temporal_decomposition(
 
 def visualize_decomposition_3d(
     data: Union[np.ndarray, SpectralData],
-    decomposition: dict,
-    reconstruction: "Optional[np.ndarray]" = None,
-    time_values: "Optional[np.ndarray]" = None,
-    wavenumbers: "Optional[np.ndarray]" = None,
+    decomposition: DecompositionResult,
     subsample_wn: int = 2,
     subsample_time: int = 1,
 ):
@@ -798,60 +893,53 @@ def visualize_decomposition_3d(
     import plotly.graph_objects as go
     from ramanlib.core import SpectralData
 
-    # Extract arrays from SpectralData if provided
-    if isinstance(data, SpectralData):
-        Y = data.intensities
-        if time_values is None:
-            time_values = data.time_values
-        if wavenumbers is None:
-            wavenumbers = data.wavenumbers
-    else:
-        Y = data
-
+    raman = decomposition.raman.intensities
+    Y = data.intensities
     n_t, n_wn = Y.shape
 
     # Handle optional axes
-    if time_values is None:
-        time_values = np.arange(n_t, dtype=np.float32)
-    if wavenumbers is None:
-        wavenumbers = np.arange(n_wn)
+    time_values = data.time_values
 
-    # Extract decomposition parameters
-    raman_obj = decomposition["raman"]
-    bases_obj = decomposition.get("fluorophore_bases", decomposition.get("bases"))
-    abundances = decomposition["abundances"]
-    rates = decomposition.get("rates", decomposition.get("decay_rates"))
+    bases = decomposition.fluorophore_spectra.intensities
 
-    # Extract intensities (support both SpectralData and np.ndarray)
-    from ramanlib.core import SpectralData
+    # # Extract intensities (support both SpectralData and np.ndarray)
+    # if isinstance(raman_obj, SpectralData):
+    #     raman = raman_obj.intensities
+    # else:
+    #     raman = raman_obj
 
-    if isinstance(raman_obj, SpectralData):
-        raman = raman_obj.intensities
-    else:
-        raman = raman_obj
+    # if isinstance(bases_obj, SpectralData):
+    #     bases = bases_obj.intensities
+    # else:
+    #     bases = bases_obj
 
-    if isinstance(bases_obj, SpectralData):
-        bases = bases_obj.intensities
-    else:
-        bases = bases_obj
+    abundances = decomposition.abundances
+    rates = decomposition.rates
+    time_constants = 1.0 / rates
 
     n_fluorophores = len(rates)
-
+    wavenumbers = data.wavenumbers
     # Compute reconstruction if not provided
-    if reconstruction is None:
-        reconstruction = np.tile(raman, (n_t, 1))
-        for i in range(n_fluorophores):
-            decay = np.exp(-rates[i] * time_values)
-            reconstruction = (
-                reconstruction + abundances[i] * decay[:, None] * bases[i, None, :]
-            )
+    # if reconstruction is None:
+    #     reconstruction = np.tile(raman, (n_t, 1))
+    #     for i in range(n_fluorophores):
+    #         decay = np.exp(-rates[i] * time_values)
+    #         reconstruction = (
+    #             reconstruction + abundances[i] * decay[:, None] * bases[i, None, :]
+    #         )
+    # reconstruction = decomposition.reconstruction(time_values)
+    reconstruction = decomposition.reconstruction(time_values)
 
-    # Compute total fluorescence
-    total_fluor = np.zeros_like(Y)
-    if bases is not None:
-        for i in range(n_fluorophores):
-            decay = np.exp(-rates[i] * time_values)
-            total_fluor += abundances[i] * decay[:, None] * bases[i, None, :]
+    # Compute total fluorescence (integrated model)
+    frame_dur = getattr(decomposition, "frame_duration", None)
+    if frame_dur is None and len(time_values) > 1:
+        frame_dur = float(time_values[1] - time_values[0])
+    if frame_dur is None:
+        frame_dur = 1.0
+
+    # Total fluorescence = reconstruction - raman contribution
+    raman_per_frame = raman * frame_dur
+    total_fluor = reconstruction - np.tile(raman_per_frame, (n_t, 1))
 
     # Subsample for performance
     wn_idx = np.arange(0, n_wn, subsample_wn)
@@ -889,7 +977,7 @@ def visualize_decomposition_3d(
     )
 
     # Residual
-    residual = Y - reconstruction
+    residual = np.square((Y - reconstruction))
     fig.add_trace(
         go.Surface(
             x=wn_sub,
