@@ -8,8 +8,7 @@ import ramanspy as rp
 from ramanlib.core import SpectralData
 import pandas as pd
 from ramanlib.bleaching.physics import (
-    evaluate_polynomial_bases,
-    fit_polynomial_bases,
+    interpolate_bases,
     reconstruct_time_series_integrated,
 )
 
@@ -176,6 +175,8 @@ def visualise_decomposition(
 
     if reference_raman is None:
         reference_raman = Y[-20:].mean(axis=0)
+        # print(reference_raman.mean())
+        # print(reference_raman.shape)
         ref_label = "Reference (last 20 frames avg)"
         print("Using last 20 frames average as reference Raman.")
     else:
@@ -386,7 +387,15 @@ def visualise_decomposition(
         print(f"   Fluorophore correlations: {np.array(fluor_corrs)}")
 
         # Check if rates are close (sort both for fair comparison)
-        rates_est_sorted = np.sort(decomposition.rates)
+        # In dictionary mode the predicted set may have more components than GT;
+        # select the top-F by abundance before comparing.
+        n_gt = len(reference_rates)
+        n_pred = len(decomposition.rates)
+        if n_pred != n_gt:
+            top_idx = np.argsort(decomposition.abundances)[-n_gt:]
+            rates_est_sorted = np.sort(decomposition.rates[top_idx])
+        else:
+            rates_est_sorted = np.sort(decomposition.rates)
         rates_gt_sorted = np.sort(reference_rates)
         rate_errors = np.abs(rates_est_sorted - rates_gt_sorted)
         rate_error_mean = rate_errors.mean()
@@ -407,35 +416,25 @@ def get_fluorophore_corrs(
     predicted: SpectralData, reference: SpectralData
 ) -> pd.DataFrame:
     """Find top k fluorophores in a reference dataset with the highest pearson correlations"""
-    if predicted.wavenumbers.shape[0] != reference.wavenumbers.shape[0]:
-        log_coeff_ref, wn_ref_mean, wn_ref_std = fit_polynomial_bases(
-            reference.intensities, reference.wavenumbers, 3
-        )
-        log_coeff_pred, wn_pred_mean, wn_pred_std = fit_polynomial_bases(
-            predicted.intensities, predicted.wavenumbers, 3
-        )
-        ref_poly = evaluate_polynomial_bases(
-            log_coeff_ref, predicted.wavenumbers, wn_ref_mean, wn_ref_std
-        )
-        pred_poly = evaluate_polynomial_bases(
-            log_coeff_pred, predicted.wavenumbers, wn_pred_mean, wn_pred_std
-        )
+    pred_wn = predicted.wavenumbers
+    ref_wn = reference.wavenumbers
 
-        print(pred_poly.shape[0], ref_poly.shape[0])
-        fluor_corrs = np.zeros(shape=(pred_poly.shape[0], ref_poly.shape[0]))
-        print(fluor_corrs.shape)
+    # Interpolate reference onto predicted wavenumber axis if needed
+    if pred_wn.shape[0] != ref_wn.shape[0] or not np.allclose(pred_wn, ref_wn):
+        ref_interp = interpolate_bases(reference.intensities, ref_wn, pred_wn)
+    else:
+        ref_interp = reference.intensities
+    pred_interp = predicted.intensities
 
-        for k in range(pred_poly.shape[0]):
-            # Find best matching GT fluorophore (they might be in different order)
-            for i in range(ref_poly.shape[0]):
-                # print(f"Correlation of {reference.label[i]} with prediction {k}")
-                corr = np.corrcoef(ref_poly[i], pred_poly[k])[0][1]
-                # print(np.corrcoef(ref_poly[i], pred_poly[k])[0][1])
-                fluor_corrs[k, i] = corr
-        if reference.label is not None:
-            return pd.DataFrame(data=fluor_corrs, columns=reference.label)
-        else:
-            return pd.DataFrame(data=fluor_corrs)
+    fluor_corrs = np.zeros((pred_interp.shape[0], ref_interp.shape[0]))
+    for k in range(pred_interp.shape[0]):
+        for i in range(ref_interp.shape[0]):
+            fluor_corrs[k, i] = np.corrcoef(pred_interp[k], ref_interp[i])[0, 1]
+
+    if reference.label is not None:
+        return pd.DataFrame(data=fluor_corrs, columns=reference.label)
+    else:
+        return pd.DataFrame(data=fluor_corrs)
 
 
 def get_fluorophore_contribution(

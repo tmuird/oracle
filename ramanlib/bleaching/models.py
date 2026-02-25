@@ -26,6 +26,9 @@ from ramanlib.bleaching.physics import (
     reconstruct_time_series_integrated,
     reconstruct_time_series_integrated_torch,
     reconstruct_time_series_torch,
+    reconstruct_time_series_factored_torch,
+    effective_to_physical_abundance_torch,
+    physical_to_effective_amplitude,
     evaluate_polynomial_bases_torch,
 )
 from ramanlib.core import SpectralData
@@ -50,6 +53,7 @@ class PhysicsDecomposition(nn.Module):
         polynomial_degree: int = 3,
         min_decay_rate: float = 0.1,
         max_decay_rate: float = 10.0,
+        frame_duration: float = 0.1,
         initial_abundances: Optional[np.ndarray] = None,
         initial_rates: Optional[np.ndarray] = None,
         initial_bases: Optional[np.ndarray] = None,
@@ -66,11 +70,12 @@ class PhysicsDecomposition(nn.Module):
         self.polynomial_degree = polynomial_degree
         self.min_decay_rate = min_decay_rate
         self.max_decay_rate = max_decay_rate
+        self.frame_duration = frame_duration
 
-        wn_mu = wavenumber_axis.mean()
-        wn_std = wavenumber_axis.std()
+        wn_min = wavenumber_axis.min()
+        wn_max = wavenumber_axis.max()
 
-        wn_normalised = (wavenumber_axis - wn_mu) / (wn_std + 1e-8)
+        wn_normalised = 2.0 * (wavenumber_axis - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
 
         # Register buffers so they are saved with the model state
         self.register_buffer("wavenumbers", wavenumber_axis.to(device))
@@ -112,17 +117,8 @@ class PhysicsDecomposition(nn.Module):
                 self.log_poly_coeffs = nn.Parameter(
                     log_poly_tensor, requires_grad=False
                 )
-                # If coeffs provided without stats, compute stats from wavenumbers
-                self.register_buffer(
-                    "poly_norm_mean",
-                    torch.tensor(wn_mu, dtype=torch.float32, device=device),
-                )
-                self.register_buffer(
-                    "poly_norm_std",
-                    torch.tensor(wn_std, dtype=torch.float32, device=device),
-                )
             elif initial_bases is not None:
-                # Use RAW wavenumbers (fit_polynomial_bases handles normalization)
+                # Fit polynomials on the model's own wavenumber axis
                 wn_np = (
                     wavenumber_axis.cpu().numpy()
                     if isinstance(wavenumber_axis, torch.Tensor)
@@ -133,34 +129,16 @@ class PhysicsDecomposition(nn.Module):
                     if isinstance(initial_bases, torch.Tensor)
                     else initial_bases
                 )
-                log_coeffs, wn_mean, wn_std = fit_polynomial_bases(
+                log_coeffs, _, _ = fit_polynomial_bases(
                     bases_np, wn_np, polynomial_degree
                 )
                 self.log_poly_coeffs = nn.Parameter(
                     torch.tensor(log_coeffs, dtype=torch.float32, device=device),
                     requires_grad=False,
                 )
-                # Store normalization stats as buffers
-                self.register_buffer(
-                    "poly_norm_mean",
-                    torch.tensor(wn_mean, dtype=torch.float32, device=device),
-                )
-                self.register_buffer(
-                    "poly_norm_std",
-                    torch.tensor(wn_std, dtype=torch.float32, device=device),
-                )
             else:
                 self.log_poly_coeffs = nn.Parameter(
                     torch.randn(n_fluorophores, n_coeffs, device=device) * 0.1
-                )
-                # Initialize stats from wavenumbers
-                self.register_buffer(
-                    "poly_norm_mean",
-                    torch.tensor(wn_mu, dtype=torch.float32, device=device),
-                )
-                self.register_buffer(
-                    "poly_norm_std",
-                    torch.tensor(wn_std, dtype=torch.float32, device=device),
                 )
 
             # vandermonde = build_vandermonde_torch(wn_normalised, polynomial_degree)
@@ -168,9 +146,25 @@ class PhysicsDecomposition(nn.Module):
         else:
             raise ValueError(f"Unknown basis_type: {basis_type}")
 
-        # Abundances (log-space: unbounded positive via exp)
+        # Abundances stored as log effective amplitudes (ã)
+        # If initial_abundances are physical w, convert to ã = w·[1-exp(-λT)]/λ
         if initial_abundances is not None:
-            abund_tensor = self._to_tensor(initial_abundances, device)
+            abund_np = (
+                initial_abundances.cpu().numpy()
+                if isinstance(initial_abundances, torch.Tensor)
+                else np.asarray(initial_abundances)
+            )
+            if initial_rates is not None:
+                # Convert physical w → effective ã
+                rates_np = (
+                    initial_rates.cpu().numpy()
+                    if isinstance(initial_rates, torch.Tensor)
+                    else np.asarray(initial_rates)
+                )
+                abund_np = physical_to_effective_amplitude(
+                    abund_np, rates_np, frame_duration
+                )
+            abund_tensor = torch.tensor(abund_np, dtype=torch.float32, device=device)
             self.abundances_raw = nn.Parameter(
                 torch.log(abund_tensor + 1e-8),
                 requires_grad=False,
@@ -210,12 +204,10 @@ class PhysicsDecomposition(nn.Module):
         if self.basis_type == "free":
             bases = torch.exp(self.fluorophore_bases_raw)
         else:
-            # Use RAW wavenumbers with stored normalization stats
+            # Self-normalizing: uses model's own wavenumber min/max for [-1, 1]
             bases = evaluate_polynomial_bases_torch(
                 self.log_poly_coeffs,
                 self.wavenumbers,
-                wn_mean=float(self.poly_norm_mean.item()),
-                wn_std=float(self.poly_norm_std.item()),
             )
 
         # Ensure amplitude ambiguity is resolved via Normalization
@@ -228,8 +220,15 @@ class PhysicsDecomposition(nn.Module):
 
     @property
     def abundances(self) -> torch.Tensor:
-        """Abundances - unbounded positive via exp."""
+        """Effective amplitudes ã — used in the factored forward model."""
         return torch.exp(self.abundances_raw)
+
+    @property
+    def physical_abundances(self) -> torch.Tensor:
+        """Physical abundances w = ã · λ / [1 - exp(-λ·T)]."""
+        return effective_to_physical_abundance_torch(
+            self.abundances, self.decay_rates, self.frame_duration
+        )
 
     @property
     def decay_rates(self) -> torch.Tensor:
@@ -239,38 +238,43 @@ class PhysicsDecomposition(nn.Module):
         return F.softplus(self.decay_rates_raw) + self.min_decay_rate
 
     def forward(self) -> torch.Tensor:
-        """Reconstruct time series from parameters."""
+        """Reconstruct time series using factored CCD integration model.
 
+        Uses effective amplitudes (ã) with point-sampled exponentials,
+        mathematically equivalent to the integrated model.
+
+        Returns [T, W].
+        """
         # Add batch dimension for reconstruction function (expects [B, W])
-
-        # Add batch dim to raman, decay rates, abundances
         raman_spectrum = self.raman_spectrum.unsqueeze(0)
-        abundances = self.abundances.unsqueeze(0)
+        effective_amps = self.abundances.unsqueeze(0)
         decay_rates = self.decay_rates.unsqueeze(0)
 
-        # print("Shapes of parameters:")
-        # print(f"Raman: {raman_spectrum.shape}")
-        # print(f"Bases: {self.fluorophore_bases.shape}")
-        # print(f"Abundances: {abundances.shape}")
-        # print(f"Decay rates: {decay_rates.shape}")
-
         return (
-            reconstruct_time_series_torch(
+            reconstruct_time_series_factored_torch(
                 raman_spectrum,
                 self.fluorophore_bases,
-                abundances,
+                effective_amps,
                 decay_rates,
                 self.time_values,
+                frame_duration=self.frame_duration,
             )
             .squeeze(0)
             .T  # Remove batch dim, transpose to [T, W]
         )
 
     def get_decomposition(self) -> DecompositionResult:
-        """Return components as numpy arrays, sorted by decay rate."""
+        """Return components as numpy arrays, sorted by decay rate.
+
+        Abundances are converted from effective amplitudes (ã) back to
+        physical abundances (w) for consistency with the data generator.
+        """
         with torch.no_grad():
             rates = self.decay_rates.cpu().numpy()
             sort_idx = np.argsort(rates)[::-1]
+
+            # Convert effective amplitudes → physical abundances
+            phys_abundances = self.physical_abundances.cpu().numpy()
 
             result = DecompositionResult(
                 raman=SpectralData(
@@ -281,7 +285,8 @@ class PhysicsDecomposition(nn.Module):
                     self.fluorophore_bases.cpu().numpy()[sort_idx],
                     self.wavenumbers.cpu().numpy(),
                 ),
-                abundances=self.abundances.cpu().numpy()[sort_idx],
+                abundances=phys_abundances[sort_idx],
+                frame_duration=self.frame_duration,
             )
             if self.basis_type == "polynomial":
                 result.log_polynomial_coeffs = self.log_poly_coeffs.cpu().numpy()[
@@ -290,17 +295,17 @@ class PhysicsDecomposition(nn.Module):
             return result
 
     def get_fluorescence_component(self, component_idx: int) -> np.ndarray:
-        """Get time-resolved fluorescence for one component."""
+        """Get time-resolved fluorescence for one component (using effective amplitudes)."""
         with torch.no_grad():
             rates = self.decay_rates.cpu().numpy()
             sort_idx = np.argsort(rates)[::-1]
             actual_idx = sort_idx[component_idx]
 
             decay = torch.exp(-self.decay_rates[actual_idx] * self.time_values)
-            amplitude = self.abundances[actual_idx]
+            eff_amp = self.abundances[actual_idx]  # effective amplitude ã
             basis = self.fluorophore_bases[actual_idx]
 
-            component = decay.unsqueeze(1) * amplitude * basis.unsqueeze(0)
+            component = decay.unsqueeze(1) * eff_amp * basis.unsqueeze(0)
             return component.cpu().numpy()
 
 
@@ -406,6 +411,7 @@ def fit_physics_model(
     first_times: Optional[int] = None,
     min_decay_rate: float = 0.1,
     max_decay_rate: float = 10.0,
+    frame_duration: float = 0.1,
     initial_rates: Optional[np.ndarray] = None,
     initial_bases: Optional[np.ndarray] = None,
     initial_raman: Optional[np.ndarray] = None,
@@ -489,6 +495,7 @@ def fit_physics_model(
         n_fluorophores=n_fluorophores,
         min_decay_rate=min_decay_rate,
         max_decay_rate=max_decay_rate,
+        frame_duration=frame_duration,
         initial_rates=initial_rates,
         initial_bases=initial_bases,
         initial_raman=initial_raman,

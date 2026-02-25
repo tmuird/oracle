@@ -32,8 +32,8 @@ class DecompositionResult:
     log_polynomial_coeffs: Optional[np.ndarray] = (
         None  # (n_fluorophores, degree+1) if polynomial bases used
     )
-    poly_norm_mean: Optional[float] = None  # Wavenumber normalization mean
-    poly_norm_std: Optional[float] = None  # Wavenumber normalization std
+    poly_wn_min: Optional[float] = None  # Wavenumber min for polynomial normalization
+    poly_wn_max: Optional[float] = None  # Wavenumber max for polynomial normalization
     frame_duration: Optional[float] = None  # CCD integration time per frame
 
     @property
@@ -169,11 +169,11 @@ def solve_spectra_with_polynomial_bases(
     n_fluorophores = len(decay_rates)
     time_values = data.time_values
 
-    # Normalize wavenumbers using z-score for consistency with other modules
+    # Normalize wavenumbers to [-1, 1] for numerical stability
     wn = data.wavenumbers
-    wn_mean = float(wn.mean())
-    wn_std = float(wn.std())
-    wn_norm = (wn - wn_mean) / (wn_std + 1e-8)
+    wn_min = float(wn.min())
+    wn_max = float(wn.max())
+    wn_norm = 2.0 * (wn - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
 
     # Build polynomial basis matrix: [1, ν, ν², ν³, ...]
     # Uses Vandermonde for consistency with physics.py
@@ -265,8 +265,8 @@ def solve_spectra_with_polynomial_bases(
         abundances=abundances,
         fluorophore_spectra=fluorescence,
         log_polynomial_coeffs=log_polynomial_coeffs,
-        poly_norm_mean=wn_mean,
-        poly_norm_std=wn_std,
+        poly_wn_min=wn_min,
+        poly_wn_max=wn_max,
     )
 
 

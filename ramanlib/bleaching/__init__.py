@@ -22,6 +22,7 @@ from ramanlib.bleaching.physics import (
     l2_normalize,
     fit_polynomial_bases,
     evaluate_polynomial_bases,
+    interpolate_bases,
 )
 
 try:
@@ -102,6 +103,7 @@ __all__ = [
     "l2_normalize",
     "fit_polynomial_bases",
     "evaluate_polynomial_bases",
+    "interpolate_bases",
     # Decomposition (DE-based)
     "DecompositionResult",
     "decompose",

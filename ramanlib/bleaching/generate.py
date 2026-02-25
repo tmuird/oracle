@@ -10,13 +10,11 @@ import numpy as np
 import xarray as xr
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List
-from scipy.interpolate import UnivariateSpline
 from skimage.metrics import peak_signal_noise_ratio
 
 from ramanlib.bleaching.physics import (
-    fit_polynomial_bases,
-    evaluate_polynomial_bases,
     l2_normalize,
+    interpolate_bases,
     reconstruct_time_series,
     reconstruct_time_series_integrated,
 )
@@ -64,8 +62,11 @@ class SyntheticConfig:
     # poisson_noise_scale acts as gain (higher = less noise, not more!)
     # Physically: photon detection gain. Range: 0.1 (high noise) to 100 (low noise)
     poisson_noise_scale: float = 1.0
-    # Gaussian noise: read noise multiplier (higher = more noise)
-    # Range: 0.1 (low) to 10 (high). Baseline is 5 counts RMS.
+    # Gaussian read noise multiplier. noise_std = 5.0 * gaussian_noise_scale (counts RMS).
+    # This is the ONLY noise in 'gaussian' mode, and the read-noise component in
+    # 'poisson_gaussian' mode.  The noise std is constant across all frames and
+    # wavenumbers (independent of signal level).
+    # Example: 0.02 → 0.1 counts RMS (near noise-free); 1.0 → 5 counts RMS; 20.0 → 100 counts.
     gaussian_noise_scale: float = 0.02
     noise_type: str = "poisson_gaussian"
 
@@ -73,11 +74,8 @@ class SyntheticConfig:
     use_shared_bases: bool = True
     # shared_axis: bool = True
     fluorophore_variation: float = 0.0
-    interpolation_method: Literal["linear", "spline"] = "spline"
-
-    # Polynomial parameterization
-    use_polynomial_fluorophores: bool = False
-    polynomial_degree: int = 3
+    interpolation_method: Literal["linear", "spline", "pchip"] = "pchip"
+    smooth_sigma: float = 0.0  # Gaussian smoothing of interpolated bases (cm⁻¹); 0 = off
 
     seed: Optional[int] = None
 
@@ -174,11 +172,6 @@ class SyntheticBleachingDataset:
             self.wavenumbers = self.raman_spectra["wavenumber"].values
             print(f"Wavenumber axis: per-sample (shape {self.wavenumbers.shape})")
 
-        # Storage for polynomial normalization stats (initialize BEFORE generating bases)
-        self.poly_norm_mean: Optional[float] = None
-        self.poly_norm_std: Optional[float] = None
-        self.log_poly_coeffs: Optional[np.ndarray] = None
-
         # for now pass single master axis as similar enough
         ref_wavenumbers = (
             self.wavenumbers[0] if self.wavenumbers.ndim == 2 else self.wavenumbers
@@ -272,49 +265,11 @@ class SyntheticBleachingDataset:
             )
         bases = fluor_ds["intensity"].isel(sample=indices).values
 
-        # Use polynomial parameterization if requested
-        if self.config.use_polynomial_fluorophores:
-            print("Using polynomial fitting for fluorophore basis.")
-            print(
-                f"  Fitting {self.config.polynomial_degree}-degree polynomials to {len(bases)} fluorophores"
-            )
-
-            # Fit on source axis
-            log_poly_coeffs = self._fit_polynomial_fluorophores(bases, source_wn)
-            self.log_poly_coeffs = log_poly_coeffs
-
-            # Evaluate on target axis (even if same - ensures consistency)
-            bases_processed = evaluate_polynomial_bases(
-                log_poly_coeffs,
-                target_wavenumbers,
-                self.poly_norm_mean,
-                self.poly_norm_std,
-            )
-        else:
-            # Not using polynomials - check if interpolation needed
-            axes_match = (len(source_wn) == len(target_wavenumbers)) and np.allclose(
-                source_wn, target_wavenumbers
-            )
-            if axes_match:
-                # Axes match, use raw bases directly
-                bases_processed = bases
-            else:
-                # TODO: Implement interpolation for non-matching axes
-                raise NotImplementedError(
-                    "Interpolation for non-matching wavenumber axes not yet implemented. "
-                    "Set use_polynomial_fluorophores=True to handle different axes."
-                )
-        # else:
-        #     if self.config.interpolation_method == "spline":
-        #         print("Using spline interpolation for fluorophore basis.")
-        #         spline = UnivariateSpline(source_wn, bases, k=3, s=0)
-        #         bases_processed = spline(target_wavenumbers)
-        #     else:
-        #         print("Using linear interpolation for fluorophore basis.")
-        #         # use linear interpolation if not spline
-        #         bases_processed = np.interp(
-        #             target_wavenumbers, source_wn, bases, left=0.0, right=0.0
-        #             )
+        bases_processed = interpolate_bases(
+            bases, source_wn, target_wavenumbers,
+            method=self.config.interpolation_method,
+            smooth_sigma=self.config.smooth_sigma,
+        )
 
         # if self.config.fluorophore_variation > 0:
         #     intensity_scale = self.rng.normal(
@@ -336,35 +291,6 @@ class SyntheticBleachingDataset:
         #     bases[i] = spectrum
 
         return l2_normalize(bases_processed, axis=1)
-
-    def _fit_polynomial_fluorophores(
-        self, bases: np.ndarray, wavenumbers: np.ndarray
-    ) -> np.ndarray:
-        """Fit polynomials to fluorophore bases and store normalization stats."""
-        # Fit on normalized wavenumbers (fit_polynomial_bases handles normalization)
-        log_poly_coeffs, wn_mean, wn_std = fit_polynomial_bases(
-            bases, wavenumbers, self.config.polynomial_degree
-        )
-
-        # Store normalization stats for later evaluation
-        self.poly_norm_mean = wn_mean
-        self.poly_norm_std = wn_std
-
-        return log_poly_coeffs
-
-    def _evaluate_polynomial_fluorophores(
-        self, log_poly_coeffs: np.ndarray, wavenumbers: np.ndarray
-    ) -> np.ndarray:
-        """Evaluate polynomial fluorophores using stored normalization stats."""
-        if self.poly_norm_mean is None or self.poly_norm_std is None:
-            raise ValueError(
-                "Normalization stats not set. Call _fit_polynomial_fluorophores first."
-            )
-
-        # Evaluate using the same normalization stats from fitting
-        return evaluate_polynomial_bases(
-            log_poly_coeffs, wavenumbers, self.poly_norm_mean, self.poly_norm_std
-        )
 
     def _generate_decay_rates(self) -> np.ndarray:
         """Sample decay rates according to configured strategy."""
@@ -457,10 +383,14 @@ class SyntheticBleachingDataset:
             return noisy_counts / self.config.poisson_noise_scale
 
         elif self.config.noise_type == "gaussian":
-            # Simple additive Gaussian noise (not physically motivated for counting)
-            noise_std = signal.std() * self.config.gaussian_noise_scale
+            # Fixed-variance additive read noise.
+            # gaussian_noise_scale is a multiplier on the 5-count RMS baseline,
+            # matching the read noise in 'poisson_gaussian' mode.
+            # Noise std is constant across all frames (unlike signal.std() which
+            # would incorrectly decrease as fluorescence bleaches).
+            noise_std = 5.0 * self.config.gaussian_noise_scale
             noise = self.rng.normal(0, noise_std, signal.shape)
-            return signal + noise
+            return np.maximum(signal + noise, 0)  # no negative counts
 
         elif self.config.noise_type == "poisson_gaussian":
             #  detector noise model: shot noise + read noise
@@ -471,7 +401,7 @@ class SyntheticBleachingDataset:
             shot_noisy = self.rng.poisson(scaled) / self.config.poisson_noise_scale
 
             # 2. Read noise (Gaussian) - constant, detector property
-            # Typical CCD: ~5 counts RMS. Scale this by gaussian_noise_scale
+            # Typical CCD: ~5 counts RMS. Scale this by gaussian_noise_scale     
             read_noise_baseline = 5.0  # counts RMS
             read_noise_std = read_noise_baseline * self.config.gaussian_noise_scale
             read_noise = self.rng.normal(0, read_noise_std, signal.shape)
@@ -671,12 +601,6 @@ class SyntheticBleachingDataset:
                 "fr_ratio_range": f"{self.config.fr_ratio_min}-{self.config.fr_ratio_max}",
                 "decay_rate_range": f"{self.config.decay_rate_min}-{self.config.decay_rate_max} s⁻¹",
                 "seed": self.config.seed,
-                "poly_norm_mean": (
-                    self.poly_norm_mean if self.poly_norm_mean is not None else "None"
-                ),
-                "poly_norm_std": (
-                    self.poly_norm_std if self.poly_norm_std is not None else "None"
-                ),
             },
         )
 
@@ -687,16 +611,6 @@ class SyntheticBleachingDataset:
                 bases_storage_array,
                 {"long_name": "Shared fluorophore basis spectra"},
             )
-            # If we fitted polynomials, also store the coefficients as a separate variable
-            if self.log_poly_coeffs is not None:
-                ds["log_poly_coeffs_gt"] = (
-                    ["fluorophore", "poly_coeff"],
-                    self.log_poly_coeffs,
-                    {
-                        "long_name": "Ground truth log polynomial coefficients",
-                        "polynomial_degree": self.config.polynomial_degree,
-                    },
-                )
         else:
             bases_storage_array = np.array(bases_storage_temp, dtype=np.float32)
             ds["fluorophore_bases_gt"] = (

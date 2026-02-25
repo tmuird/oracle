@@ -322,6 +322,8 @@ def fit_polynomial_bases(
 
     B(ν) = exp(Σₖ cₖ · νₙₒᵣₘᵏ)
 
+    Wavenumbers are normalized to [-1, 1] using min/max for numerical stability.
+
     Parameters
     ----------
     bases : np.ndarray
@@ -335,18 +337,18 @@ def fit_polynomial_bases(
     -------
     poly_coeffs : np.ndarray
         Shape (n_fluorophores, degree+1), ascending power order
-    wn_mean : float
-        Wavenumber mean used for normalization
-    wn_std : float
-        Wavenumber std used for normalization
+    wn_min : float
+        Wavenumber min used for normalization
+    wn_max : float
+        Wavenumber max used for normalization
     """
     n_fluorophores = bases.shape[0]
     n_coeffs = degree + 1
 
-    # Compute normalization stats (z-score)
-    wn_mean = float(wavenumbers.mean())
-    wn_std = float(wavenumbers.std())
-    wn_normalized = (wavenumbers - wn_mean) / (wn_std + 1e-8)
+    # Normalize to [-1, 1] using min/max
+    wn_min = float(wavenumbers.min())
+    wn_max = float(wavenumbers.max())
+    wn_normalized = 2.0 * (wavenumbers - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
 
     log_poly_coeffs = np.zeros((n_fluorophores, n_coeffs))
     for i in range(n_fluorophores):
@@ -355,27 +357,31 @@ def fit_polynomial_bases(
         log_coeffs = np.polyfit(wn_normalized, log_basis, deg=degree)
         log_poly_coeffs[i] = log_coeffs[::-1]
 
-    return log_poly_coeffs, wn_mean, wn_std
+    return log_poly_coeffs, wn_min, wn_max
 
 
 def evaluate_polynomial_bases(
     log_poly_coeffs: np.ndarray,
     wavenumbers: np.ndarray,
-    wn_mean: float,
-    wn_std: float,
+    wn_min: Optional[float] = None,
+    wn_max: Optional[float] = None,
 ) -> np.ndarray:
     """
     Evaluate polynomial fluorophore bases in log-space, then exponentiate.
+
+    Wavenumbers are normalized to [-1, 1]. If wn_min/wn_max are not provided,
+    they are computed from the wavenumbers (self-normalizing).
+
     Parameters
     ----------
     log_poly_coeffs : np.ndarray
         Shape (n_fluorophores, degree+1), ascending power order
     wavenumbers : np.ndarray
         Wavenumber axis (cm⁻¹)
-    wn_mean : float
-        Wavenumber mean for normalization (from fitting)
-    wn_std : float
-        Wavenumber std for normalization (from fitting)
+    wn_min : float, optional
+        Wavenumber min for normalization. If None, computed from wavenumbers.
+    wn_max : float, optional
+        Wavenumber max for normalization. If None, computed from wavenumbers.
 
     Returns
     -------
@@ -386,14 +392,97 @@ def evaluate_polynomial_bases(
         log_poly_coeffs = log_poly_coeffs[None, :]
     degree = log_poly_coeffs.shape[1] - 1
 
-    # Normalize wavenumbers using provided stats
-    wn_normalized = (wavenumbers - wn_mean) / (wn_std + 1e-8)
+    if wn_min is None:
+        wn_min = float(wavenumbers.min())
+    if wn_max is None:
+        wn_max = float(wavenumbers.max())
+
+    wn_normalized = 2.0 * (wavenumbers - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
     vandermonde = np.vander(wn_normalized, N=degree + 1, increasing=True)
 
     log_intensity_values = log_poly_coeffs @ vandermonde.T
     bases = np.exp(log_intensity_values)
 
     return bases
+
+
+def interpolate_bases(
+    bases: np.ndarray,
+    source_wn: np.ndarray,
+    target_wn: np.ndarray,
+    method: str = "pchip",
+    smooth_sigma: float = 0.0,
+) -> np.ndarray:
+    """
+    Interpolate fluorophore bases from one wavenumber axis onto another.
+
+    Handles unsorted source axes. Non-negative clipping is applied after
+    interpolation to remove any overshoot artifacts.
+
+    Parameters
+    ----------
+    bases : np.ndarray
+        Fluorophore spectra, shape (n_fluorophores, n_source)
+    source_wn : np.ndarray
+        Source wavenumber axis, shape (n_source,)
+    target_wn : np.ndarray
+        Target wavenumber axis, shape (n_target,)
+    method : str
+        Interpolation method:
+        - 'pchip'  (default) Monotone piecewise cubic Hermite. Smooth, no
+                   oscillations between data points. Best for sparse→dense
+                   upsampling of smooth fluorescence spectra.
+        - 'spline' Exact cubic spline (s=0). Can produce ringing/wobbles
+                   when upsampling from very sparse (~36) to dense (~630)
+                   grids because it is forced to pass exactly through every
+                   point.
+        - 'linear' Simple linear interpolation. Always stable but jagged.
+    smooth_sigma : float
+        If > 0, apply Gaussian smoothing to the interpolated result with
+        this standard deviation (in wavenumber units, cm⁻¹). Useful when
+        the source spectra themselves contain measurement noise. Default 0
+        (no smoothing).
+
+    Returns
+    -------
+    np.ndarray
+        Interpolated bases, shape (n_fluorophores, n_target)
+    """
+    axes_match = len(source_wn) == len(target_wn) and np.allclose(source_wn, target_wn)
+    if axes_match:
+        result = bases.copy()
+    else:
+        try:
+            from scipy.interpolate import PchipInterpolator, UnivariateSpline
+            _have_scipy = True
+        except ImportError:
+            _have_scipy = False
+
+        sort_idx = np.argsort(source_wn)
+        source_wn_sorted = source_wn[sort_idx]
+        bases_sorted = bases[:, sort_idx]
+
+        result = np.zeros((bases.shape[0], len(target_wn)))
+        for i in range(bases.shape[0]):
+            if method == "pchip" and _have_scipy:
+                interp = PchipInterpolator(source_wn_sorted, bases_sorted[i], extrapolate=True)
+                result[i] = interp(target_wn)
+            elif method == "spline" and _have_scipy:
+                spline = UnivariateSpline(source_wn_sorted, bases_sorted[i], k=3, s=0)
+                result[i] = spline(target_wn)
+            else:
+                result[i] = np.interp(
+                    target_wn, source_wn_sorted, bases_sorted[i], left=0.0, right=0.0
+                )
+
+    if smooth_sigma > 0.0:
+        from scipy.ndimage import gaussian_filter1d
+        # Convert sigma from cm⁻¹ to pixels on the target axis
+        wn_spacing = float(np.mean(np.diff(np.sort(target_wn))))
+        sigma_px = smooth_sigma / wn_spacing
+        result = gaussian_filter1d(result, sigma=sigma_px, axis=1)
+
+    return np.maximum(result, 0.0)
 
 
 # =============================================================================
@@ -419,11 +508,14 @@ if TORCH_AVAILABLE:
     def evaluate_polynomial_bases_torch(
         log_poly_coeffs: "torch.Tensor",
         wavenumbers: "torch.Tensor",
-        wn_mean: Optional[float] = None,
-        wn_std: Optional[float] = None,
+        wn_min: Optional[float] = None,
+        wn_max: Optional[float] = None,
     ) -> "torch.Tensor":
         """
         Evaluate polynomial fluorophore bases in log-space, then exponentiate.
+
+        Wavenumbers are normalized to [-1, 1] using min/max. If wn_min/wn_max
+        are not provided, they are computed from the wavenumbers (self-normalizing).
 
         Parameters
         ----------
@@ -431,12 +523,10 @@ if TORCH_AVAILABLE:
             Shape (n_fluorophores, degree+1), ascending power order
         wavenumbers : torch.Tensor
             Wavenumber axis (cm⁻¹)
-        wn_mean : float, optional
-            Wavenumber mean for normalization (from fitting)
-            If None, computes from wavenumbers
-        wn_std : float, optional
-            Wavenumber std for normalization (from fitting)
-            If None, computes from wavenumbers
+        wn_min : float, optional
+            Wavenumber min for normalization. If None, computed from wavenumbers.
+        wn_max : float, optional
+            Wavenumber max for normalization. If None, computed from wavenumbers.
 
         Returns
         -------
@@ -445,13 +535,12 @@ if TORCH_AVAILABLE:
         """
         degree = log_poly_coeffs.shape[1] - 1
 
-        # Normalise wavenumbers using provided stats (or compute if not provided). This ensures consistency with training.
-        if wn_mean is None:
-            wn_mean = float(wavenumbers.mean().item())
-        if wn_std is None:
-            wn_std = float(wavenumbers.std().item())
+        if wn_min is None:
+            wn_min = float(wavenumbers.min().item())
+        if wn_max is None:
+            wn_max = float(wavenumbers.max().item())
 
-        wn_normalized = (wavenumbers - wn_mean) / (wn_std + 1e-8)
+        wn_normalized = 2.0 * (wavenumbers - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
         vandermonde = torch.vander(wn_normalized, N=degree + 1, increasing=True)
 
         if log_poly_coeffs.dtype != vandermonde.dtype:
@@ -576,7 +665,7 @@ if TORCH_AVAILABLE:
         t_end = t_start + frame_duration
 
         # Analytical integral of exp(-λt) from t_start to t_end:
-        # ∫ exp(-λt) dt = (1/λ) · [exp(-λ·t_start) - exp(-λ·t_end)]
+        # \int exp(-λt) dt = (1/λ) · [exp(-λ·t_start) - exp(-λ·t_end)]
         #
         # Result: [B, T, F]
         decay_matrix = (
