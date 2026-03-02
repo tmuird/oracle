@@ -18,6 +18,9 @@ def compare_spectra(
     titles: Optional[List[str]] = None,
     plot_mean: bool = False,
     alphas: Optional[List[float]] = None,
+    colours: Optional[List[str]] = None,
+    linewidths: Optional[List[float]] = None,
+    linestyles: Optional[List[str]] = None,
     crop: Optional[Tuple[float, float]] = None,
 ) -> Union[Tuple[Figure, Axes], Tuple[Figure, np.ndarray]]:
     """
@@ -46,6 +49,14 @@ def compare_spectra(
         If True, plot mean spectrum for each dataset
     alphas : list of float, optional
         Alpha values for each dataset
+    colours : list of str, optional
+        Color values for each dataset (e.g., ['#1f77b4', '#ff7f0e', '#2ca02c']).
+        If not provided, uses matplotlib's default color cycle.
+    linewidths : list of float, optional
+        Line widths for each dataset. Default is 1.5 for all.
+    linestyles : list of str, optional
+        Line styles for each dataset (e.g., ['-', '--', ':', '-.']).
+        Default is solid line '-' for all.
     crop : tuple of (min, max), optional
         Crop wavenumber range
 
@@ -129,6 +140,32 @@ def compare_spectra(
     if alphas is None:
         alphas = [0.7] * n_datasets
 
+    # Set default colours (use matplotlib default cycle if not provided)
+    if colours is None:
+        prop_cycle = plt.rcParams['axes.prop_cycle']
+        default_colors = prop_cycle.by_key()['color']
+        colours = [default_colors[i % len(default_colors)] for i in range(n_datasets)]
+    elif len(colours) != n_datasets:
+        raise ValueError(
+            f"Number of colours ({len(colours)}) must match number of datasets ({n_datasets})"
+        )
+
+    # Set default linewidths
+    if linewidths is None:
+        linewidths = [1.5] * n_datasets
+    elif len(linewidths) != n_datasets:
+        raise ValueError(
+            f"Number of linewidths ({len(linewidths)}) must match number of datasets ({n_datasets})"
+        )
+
+    # Set default linestyles
+    if linestyles is None:
+        linestyles = ['-'] * n_datasets
+    elif len(linestyles) != n_datasets:
+        raise ValueError(
+            f"Number of linestyles ({len(linestyles)}) must match number of datasets ({n_datasets})"
+        )
+
     # --- Plotting Logic ---
 
     if overlay:
@@ -144,8 +181,8 @@ def compare_spectra(
                 for dataset_idx, spec in enumerate(spectral_data):
                     wn, intensity = spec.get_spectrum(sample_idx)
                     label = spec.label or f"Dataset {dataset_idx}"
-                    
-                    ax.plot(wn, intensity, alpha=alphas[dataset_idx], label=label)
+
+                    ax.plot(wn, intensity, alpha=alphas[dataset_idx], label=label, color=colours[dataset_idx], linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
 
                 if legend:
                     ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
@@ -171,7 +208,7 @@ def compare_spectra(
                         if n_samples > 1
                         else dataset_label
                     )
-                    ax.plot(wn, intensity, label=label, alpha=alphas[dataset_idx])
+                    ax.plot(wn, intensity, label=label, alpha=alphas[dataset_idx], color=colours[dataset_idx], linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
 
                 if plot_mean:
                     # Compute mean (only if all samples share same axis)
@@ -183,6 +220,7 @@ def compare_spectra(
                             label=f"{dataset_label} - Mean",
                             linestyle="--",
                             linewidth=2,
+                            color=colours[dataset_idx],
                         )
             if legend:
                 ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
@@ -205,7 +243,7 @@ def compare_spectra(
                     ax.grid(True, alpha=0.3)
 
                     wn, intensity = spec.get_spectrum(sample_idx)
-                    ax.plot(wn, intensity, alpha=alphas[dataset_idx])
+                    ax.plot(wn, intensity, alpha=alphas[dataset_idx], color=colours[dataset_idx], linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
 
                 plt.tight_layout()
                 plt.show()
@@ -232,6 +270,9 @@ def compare_spectra(
                         intensity,
                         label=f"Sample {sample_idx}",
                         alpha=alphas[dataset_idx],
+                        color=colours[dataset_idx],
+                        linewidth=linewidths[dataset_idx],
+                        linestyle=linestyles[dataset_idx],
                     )
 
                 if plot_mean and spec.wavenumbers.ndim == 1:
