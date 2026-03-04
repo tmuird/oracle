@@ -13,6 +13,7 @@ This module provides functions shared by:
 from typing import Tuple, Optional
 import numpy as np
 import torch.nn.functional as F
+
 try:
     import torch
 
@@ -172,15 +173,13 @@ def reconstruct_time_series_integrated(
         Shape (n_timepoints, n_wavenumbers)
     """
     # decay_rates: [F] -> [1, F],  time_values: [T] -> [T, 1]
-    lam = decay_rates[np.newaxis, :]        # [1, F]
-    t_start = time_values[:, np.newaxis]    # [T, 1]
-    t_end = t_start + frame_duration        # [T, 1]
+    lam = decay_rates[np.newaxis, :]  # [1, F]
+    t_start = time_values[:, np.newaxis]  # [T, 1]
+    t_end = t_start + frame_duration  # [T, 1]
 
     # Analytical integral: (1/λ) * [exp(-λ·t_start) - exp(-λ·t_end)]
     # Result: [T, F]
-    decay_integral = (
-        np.exp(-lam * t_start) - np.exp(-lam * t_end)
-    ) / (lam + 1e-8)
+    decay_integral = (np.exp(-lam * t_start) - np.exp(-lam * t_end)) / (lam + 1e-8)
 
     # weighted_bases: [F, W]
     weighted_bases = abundances[:, np.newaxis] * bases
@@ -234,9 +233,7 @@ def reconstruct_time_series_factored(
         Shape (n_timepoints, n_wavenumbers)
     """
     # Simple point-sampling exponential decay: [T, F]
-    decay_matrix = np.exp(
-        -decay_rates[np.newaxis, :] * time_values[:, np.newaxis]
-    )
+    decay_matrix = np.exp(-decay_rates[np.newaxis, :] * time_values[:, np.newaxis])
 
     # Weighted bases: [F, W]
     weighted_bases = effective_amplitudes[:, np.newaxis] * bases
@@ -276,8 +273,10 @@ def effective_to_physical_abundance(
     abundances : np.ndarray
         Physical abundances w, same shape as input
     """
-    return effective_amplitudes * decay_rates / (
-        1.0 - np.exp(-decay_rates * frame_duration) + 1e-8
+    return (
+        effective_amplitudes
+        * decay_rates
+        / (1.0 - np.exp(-decay_rates * frame_duration) + 1e-8)
     )
 
 
@@ -305,12 +304,15 @@ def physical_to_effective_amplitude(
     effective_amplitudes : np.ndarray
         Effective amplitudes ã
     """
-    return abundances * (1.0 - np.exp(-decay_rates * frame_duration)) / (
-        decay_rates + 1e-8
+    return (
+        abundances
+        * (1.0 - np.exp(-decay_rates * frame_duration))
+        / (decay_rates + 1e-8)
     )
 
 
 # Polynomial Fitting
+
 
 def fit_polynomial_bases(
     bases: np.ndarray,
@@ -454,6 +456,7 @@ def interpolate_bases(
     else:
         try:
             from scipy.interpolate import PchipInterpolator, UnivariateSpline
+
             _have_scipy = True
         except ImportError:
             _have_scipy = False
@@ -465,7 +468,9 @@ def interpolate_bases(
         result = np.zeros((bases.shape[0], len(target_wn)))
         for i in range(bases.shape[0]):
             if method == "pchip" and _have_scipy:
-                interp = PchipInterpolator(source_wn_sorted, bases_sorted[i], extrapolate=True)
+                interp = PchipInterpolator(
+                    source_wn_sorted, bases_sorted[i], extrapolate=True
+                )
                 result[i] = interp(target_wn)
             elif method == "spline" and _have_scipy:
                 spline = UnivariateSpline(source_wn_sorted, bases_sorted[i], k=3, s=0)
@@ -477,6 +482,7 @@ def interpolate_bases(
 
     if smooth_sigma > 0.0:
         from scipy.ndimage import gaussian_filter1d
+
         # Convert sigma from cm⁻¹ to pixels on the target axis
         wn_spacing = float(np.mean(np.diff(np.sort(target_wn))))
         sigma_px = smooth_sigma / wn_spacing
@@ -573,13 +579,18 @@ if TORCH_AVAILABLE:
         abundances: torch.Tensor,  # [Batch, Fluors]
         decay_rates: torch.Tensor,  # [Batch, Fluors]
         time_values: torch.Tensor,  # [Timepoints] (Buffer)
+        frame_duration: float = 0.1,
     ) -> torch.Tensor:
         """
         Batch-Safe Physics Reconstruction using Matrix Multiplication.
 
+        raman is treated as a rate (counts/second); it is multiplied by frame_duration
+        to give counts/frame, consistent with reconstruct_time_series_integrated_torch
+        and reconstruct_time_series_factored_torch.
+
         Shapes:
         - Input Raman: [B, W]
-        - Output:      [B, W, T] (Standard image format for CNNs) or [B, T, W] (Sequence format)
+        - Output:      [B, W, T]
         """
 
         # 1. Create Decay Matrix [Batch, Time, Fluors]
@@ -595,10 +606,8 @@ if TORCH_AVAILABLE:
         # This gives the decay curve for every fluorophore in every batch sample
         # print(f"Decay matrix : {lam}")
         decay_matrix = torch.exp(-lam * t)
-        
 
-        
-        # decay_matrix = decay_matrix / (decay_matrix.mean(dim=1, keepdim=True) + 1e-8) 
+        # decay_matrix = decay_matrix / (decay_matrix.mean(dim=1, keepdim=True) + 1e-8)
         # Create Weighted Bases [Batch, Fluors, Wavenumbers]
         # abundances: [B, F] -> [B, F, 1]
         w = abundances.unsqueeze(2)
@@ -611,20 +620,16 @@ if TORCH_AVAILABLE:
 
         # Matrix Multiplication
         # [B, T, F] @ [B, F, W] -> [B, T, W]
-        # For each sample, we sum over Fluors (F) 
+        # For each sample, we sum over Fluors (F)
         fluorescence = torch.matmul(decay_matrix, weighted_bases)
 
-        # Add Raman
-        # Raman is [B, W]. We need [B, T, W]
-        # We broadcast Raman across time
-        raman_expanded = raman.unsqueeze(1)  # [B, 1, W]
+        # Add Raman: rate × frame_duration = counts/frame, broadcast across time
+        raman_integrated = raman.unsqueeze(1) * frame_duration  # [B, 1, W]
 
-        total_signal = fluorescence + raman_expanded  # [B, T, W]
-
+        total_signal = fluorescence + raman_integrated  # [B, T, W]
 
         # return [B, W, T] for CNN
         return total_signal.transpose(1, 2)
-
 
     def reconstruct_time_series_integrated_torch(
         raman: torch.Tensor,  # [Batch, Wavenumbers]
@@ -668,14 +673,14 @@ if TORCH_AVAILABLE:
         # \int exp(-λt) dt = (1/λ) · [exp(-λ·t_start) - exp(-λ·t_end)]
         #
         # Result: [B, T, F]
-        decay_matrix = (
-            torch.exp(-lam * t_start) - torch.exp(-lam * t_end)
-        ) / (lam + 1e-8)
+        decay_matrix = (torch.exp(-lam * t_start) - torch.exp(-lam * t_end)) / (
+            lam + 1e-8
+        )
 
         # Weighted bases: [B, F, W]
-        w = abundances.unsqueeze(2)       # [B, F, 1]
-        B = bases.unsqueeze(0)            # [1, F, W]
-        weighted_bases = w * B            # [B, F, W]
+        w = abundances.unsqueeze(2)  # [B, F, 1]
+        B = bases.unsqueeze(0)  # [1, F, W]
+        weighted_bases = w * B  # [B, F, W]
 
         # [B, T, F] @ [B, F, W] -> [B, T, W]
         fluorescence = torch.matmul(decay_matrix, weighted_bases)
@@ -689,11 +694,11 @@ if TORCH_AVAILABLE:
         return total_signal.transpose(1, 2)
 
     def reconstruct_time_series_factored_torch(
-        raman: torch.Tensor,              # [Batch, Wavenumbers]
-        bases: torch.Tensor,              # [Fluors, Wavenumbers]
+        raman: torch.Tensor,  # [Batch, Wavenumbers]
+        bases: torch.Tensor,  # [Fluors, Wavenumbers] or [Batch, Fluors, Wavenumbers]
         effective_amplitudes: torch.Tensor,  # [Batch, Fluors] — ã values
-        decay_rates: torch.Tensor,        # [Batch, Fluors]
-        time_values: torch.Tensor,        # [Timepoints]
+        decay_rates: torch.Tensor,  # [Batch, Fluors]
+        time_values: torch.Tensor,  # [Timepoints]
         frame_duration: float = 0.1,
     ) -> torch.Tensor:
         """
@@ -723,8 +728,9 @@ if TORCH_AVAILABLE:
 
         # Weighted bases with effective amplitudes: [B, F, W]
         a = effective_amplitudes.unsqueeze(2)  # [B, F, 1]
-        B = bases.unsqueeze(0)                 # [1, F, W]
-        weighted_bases = a * B                 # [B, F, W]
+        # bases may be shared [F, W] or per-sample [B, F, W]
+        B = bases if bases.dim() == 3 else bases.unsqueeze(0)  # [B or 1, F, W]
+        weighted_bases = a * B  # [B, F, W]
 
         # [B, T, F] @ [B, F, W] -> [B, T, W]
         fluorescence = torch.matmul(decay_matrix, weighted_bases)
@@ -761,6 +767,8 @@ if TORCH_AVAILABLE:
         abundances : torch.Tensor
             Physical abundances w
         """
-        return effective_amplitudes * decay_rates / (
-            1.0 - torch.exp(-decay_rates * frame_duration) + 1e-8
+        return (
+            effective_amplitudes
+            * decay_rates
+            / (1.0 - torch.exp(-decay_rates * frame_duration) + 1e-8)
         )
