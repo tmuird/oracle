@@ -5,21 +5,22 @@ import numpy as np
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import ramanspy as rp
+
 from ramanlib.core import SpectralData
 import pandas as pd
 from ramanlib.bleaching.physics import (
     interpolate_bases,
-    reconstruct_time_series_integrated,
+    reconstruct_time_series_numpy,
 )
 
 
 def visualize_data_3d(
-    data: np.ndarray,
-    time_values: Optional[np.ndarray] = None,
-    wavenumbers: Optional[np.ndarray] = None,
-    subsample_wn: int = 2,
-    subsample_time: int = 1,
-    title: str = "3D Dataset Visualization",
+        data: np.ndarray,
+        time_values: Optional[np.ndarray] = None,
+        wavenumbers: Optional[np.ndarray] = None,
+        subsample_wn: int = 2,
+        subsample_time: int = 1,
+        title: str = "3D Dataset Visualization",
 ):
     """
     3D visualization of a raw data sample using plotly.
@@ -86,18 +87,19 @@ from ramanlib.bleaching.decompose import DecompositionResult
 
 
 def visualise_decomposition(
-    data: SpectralData,
-    decomposition: DecompositionResult,
-    # reconstruction: Optional[np.ndarray] = None,
-    # time_values: Optional[np.ndarray] = None,
-    # show_airpls: bool = False,
-    # wavenumbers: Optional[np.ndarray] = None,
-    reference_raman: Optional[np.ndarray] = None,
-    reference_bases: Optional[np.ndarray] = None,
-    reference_rates: Optional[np.ndarray] = None,
-    reference_abundances: Optional[np.ndarray] = None,
-    normalise: bool = False,
-    figsize: Tuple[int, int] = (16, 10),
+        data: SpectralData,
+        decomposition: DecompositionResult,
+        physics_model: str,
+        # reconstruction: Optional[np.ndarray] = None,
+        # time_values: Optional[np.ndarray] = None,
+        # show_airpls: bool = False,
+        # wavenumbers: Optional[np.ndarray] = None,
+        reference_raman: Optional[np.ndarray] = None,
+        reference_bases: Optional[np.ndarray] = None,
+        reference_rates: Optional[np.ndarray] = None,
+        reference_abundances: Optional[np.ndarray] = None,
+        normalise: bool = False,
+        figsize: Tuple[int, int] = (16, 10),
 ):
     """
     Visualize spectral decomposition results.
@@ -236,9 +238,9 @@ def visualise_decomposition(
                 label=f"B{i + 1} (τ={tau:.3f}s) w={abundances[i]:.1f}",
             )
     if (
-        reference_bases is not None
-        and reference_rates is not None
-        and reference_abundances is not None
+            reference_bases is not None
+            and reference_rates is not None
+            and reference_abundances is not None
     ):
         for i in range(reference_bases.shape[0]):
             if reference_rates is not None:
@@ -271,13 +273,14 @@ def visualise_decomposition(
     if bases is not None:
         for i in range(n_fluorophores):
             # Per-fluorophore contribution over all timepoints via physics function
-            fluor_series = reconstruct_time_series_integrated(
+            fluor_series = reconstruct_time_series_numpy(
                 raman=np.zeros(bases.shape[1]),
-                bases=bases[i:i+1, :],
+                bases=bases[i:i + 1, :],
                 abundances=np.array([abundances[i]]),
                 decay_rates=np.array([rates[i]]),
                 time_values=time_values,
                 frame_duration=frame_dur,
+                physics_model=physics_model
             )  # [T, W]
             amplitude = fluor_series.mean(axis=1)  # mean across wavenumbers
             total_fluor += amplitude
@@ -289,19 +292,20 @@ def visualise_decomposition(
                 label=f"τ={tau:.3f}s, w={abundances[i]:.1f}",
             )
     if (
-        reference_bases is not None
-        and reference_rates is not None
-        and reference_abundances is not None
+            reference_bases is not None
+            and reference_rates is not None
+            and reference_abundances is not None
     ):
         total_gt_fluor = np.zeros(n_t)
         for i in range(reference_bases.shape[0]):
-            fluor_series = reconstruct_time_series_integrated(
+            fluor_series = reconstruct_time_series_numpy(
                 raman=np.zeros(reference_bases.shape[1]),
-                bases=reference_bases[i:i+1, :],
+                bases=reference_bases[i:i + 1, :],
                 abundances=np.array([reference_abundances[i]]),
                 decay_rates=np.array([reference_rates[i]]),
                 time_values=time_values,
                 frame_duration=frame_dur,
+                physics_model=physics_model
             )
             amplitude = fluor_series.mean(axis=1)
             total_gt_fluor += amplitude
@@ -311,7 +315,7 @@ def visualise_decomposition(
                 colors[i % len(colors)],
                 linestyle="--",
                 alpha=0.7,
-                label=f"GT τ={1.0/reference_rates[i]:.3f}s w={reference_abundances[i]:.1f}",
+                label=f"GT τ={1.0 / reference_rates[i]:.3f}s w={reference_abundances[i]:.1f}",
             )
         ax.plot(
             time_values, total_gt_fluor, "r--", linewidth=2, label="Total GT Predicted"
@@ -338,13 +342,13 @@ def visualise_decomposition(
     ax = axes[1, 2]
     residuals = Y - reconstruction
     mse_first_times = np.mean((residuals[:20, :]) ** 2)
-    mse = np.mean(residuals**2)
-    mse_over_time = np.mean(residuals**2, axis=1)
+    mse = np.mean(residuals ** 2)
+    mse_over_time = np.mean(residuals ** 2, axis=1)
     ax.plot(time_values, mse_over_time, "k-", label="MSE")
     ax.fill_between(
         time_values,
-        mse_over_time - np.std(residuals**2, axis=1),
-        mse_over_time + np.std(residuals**2, axis=1),
+        mse_over_time - np.std(residuals ** 2, axis=1),
+        mse_over_time + np.std(residuals ** 2, axis=1),
         alpha=0.3,
     )
     ax.set_xlabel("Time (s)")
@@ -413,7 +417,7 @@ except ImportError:
 
 
 def get_fluorophore_corrs(
-    predicted: SpectralData, reference: SpectralData
+        predicted: SpectralData, reference: SpectralData
 ) -> pd.DataFrame:
     """Find top k fluorophores in a reference dataset with the highest pearson correlations"""
     pred_wn = predicted.wavenumbers
@@ -438,11 +442,13 @@ def get_fluorophore_corrs(
 
 
 def get_fluorophore_contribution(
-    ds: xr.Dataset,
-    sample_idx: int,
-    fluorophore_idx: int,
-    time_seconds: Optional[float] = None,
-    frame_duration: Optional[float] = None,
+        ds: xr.Dataset,
+        sample_idx: int,
+        fluorophore_idx: int,
+        physics_model: str,
+        time_seconds: Optional[float] = None,
+        frame_duration: Optional[float] = None,
+
 ) -> np.ndarray:
     """
     Compute contribution of a single fluorophore at a given time using CCD integration.
@@ -494,22 +500,24 @@ def get_fluorophore_contribution(
             frame_duration = 0.1
 
     # Use physics function with single fluorophore, zero Raman
-    result = reconstruct_time_series_integrated(
+    result = reconstruct_time_series_numpy(
         raman=np.zeros_like(B_i),
         bases=B_i[np.newaxis, :],
         abundances=np.array([w_i]),
         decay_rates=np.array([float(λ_i)]),
         time_values=np.array([time_seconds]),
+        physics_model=physics_model,
         frame_duration=frame_duration,
+
     )
     return result[0]  # [1, W] -> [W]
 
 
 def get_total_fluorescence(
-    ds: xr.Dataset,
-    sample_idx: int,
-    time_seconds: float,
-    frame_duration: Optional[float] = None,
+        ds: xr.Dataset,
+        sample_idx: int,
+        time_seconds: float,
+        frame_duration: Optional[float] = None,
 ) -> np.ndarray:
     """
     Compute total fluorescence at a given time using CCD integration model.
@@ -526,16 +534,17 @@ def get_total_fluorescence(
     total = np.zeros(n_wn)
     for i in range(n_fluorophores):
         total += get_fluorophore_contribution(
-            ds, sample_idx, i, time_seconds, frame_duration=frame_duration
+            ds, sample_idx, i, time_seconds, frame_duration=frame_duration, physics_model=physics_model
         )
 
     return total
 
 
 def get_full_decomposition(
-    ds: xr.Dataset,
-    sample_idx: int,
-    time_seconds: float,
+        ds: xr.Dataset,
+        sample_idx: int,
+        time_seconds: float,
+        physics_model: str,
 ) -> Dict:
     """
     Get all components of the decomposition at a given time.
@@ -578,9 +587,9 @@ def get_full_decomposition(
 
     # Use integrated model for single frame (matches data generation)
     t_single = np.array([actual_time])
-    reconstructed_frame = reconstruct_time_series_integrated(
+    reconstructed_frame = reconstruct_time_series_numpy(
         raman, bases, abundances, decay_rates, t_single,
-        frame_duration=frame_duration,
+        frame_duration=frame_duration, physics_model=physics_model
     )
     reconstructed = reconstructed_frame[0]  # [1, W] -> [W]
 
@@ -593,13 +602,14 @@ def get_full_decomposition(
     # Individual fluorophore contributions via physics function
     fluorophores = {}
     for i in range(n_fluorophores):
-        contrib = reconstruct_time_series_integrated(
+        contrib = reconstruct_time_series_numpy(
             raman=np.zeros(bases.shape[1]),
-            bases=bases[i:i+1, :],
+            bases=bases[i:i + 1, :],
             abundances=np.array([abundances[i]]),
             decay_rates=np.array([decay_rates[i]]),
             time_values=t_single,
             frame_duration=frame_duration,
+            physics_model=physics_model,
         )
         fluorophores[f"fluorophore_{i}"] = contrib[0]  # [1, W] -> [W]
 
@@ -629,11 +639,12 @@ def get_full_decomposition(
 
 
 def plot_decomposition(
-    ds: xr.Dataset,
-    sample_idx: int,
-    time_seconds: float,
-    figsize: Tuple[int, int] = (14, 10),
-    show_noisy: bool = True,
+        ds: xr.Dataset,
+        sample_idx: int,
+        time_seconds: float,
+        physics_model: str,
+        figsize: Tuple[int, int] = (14, 10),
+        show_noisy: bool = True,
 ) -> Figure:
     """
     Plot full decomposition for a single sample at a given time.
@@ -643,7 +654,7 @@ def plot_decomposition(
     - Bottom left: Individual fluorophore contributions
     - Bottom right: Residual
     """
-    decomp = get_full_decomposition(ds, sample_idx, time_seconds)
+    decomp = get_full_decomposition(ds, sample_idx, time_seconds, physics_model)
     wn = decomp["wavenumbers"]
     n_fluorophores = len(ds["fluorophore"])
 
@@ -705,7 +716,7 @@ def plot_decomposition(
             wn,
             decomp[f"fluorophore_{i}"],
             color=colors[i],
-            label=f"F{i+1}: τ={τ:.3f}s, w={w:.1f}",
+            label=f"F{i + 1}: τ={τ:.3f}s, w={w:.1f}",
             linewidth=1.5,
         )
 
@@ -722,7 +733,7 @@ def plot_decomposition(
     ax3.axhline(0, color="r", linestyle="--", alpha=0.5)
     ax3.fill_between(wn, residual, 0, alpha=0.3)
 
-    rmse = np.sqrt(np.mean(residual**2))
+    rmse = np.sqrt(np.mean(residual ** 2))
     ax3.set_xlabel("Wavenumber (cm⁻¹)")
     ax3.set_ylabel("Residual")
     ax3.set_title(f"Residual (RMSE = {rmse:.4f})")
@@ -733,9 +744,10 @@ def plot_decomposition(
 
 
 def plot_temporal_decomposition(
-    ds: xr.Dataset,
-    sample_idx: int,
-    figsize: Tuple[int, int] = (14, 8),
+        ds: xr.Dataset,
+        sample_idx: int,
+        physics_model: str,
+        figsize: Tuple[int, int] = (14, 8),
 ) -> Figure:
     """
     Plot decomposition across all time points for a single sample.
@@ -808,13 +820,14 @@ def plot_temporal_decomposition(
             B_i = ds["fluorophore_bases_gt"].isel(fluorophore=i).values
 
         # Per-fluorophore contribution over all timepoints via physics function
-        fluor_series = reconstruct_time_series_integrated(
+        fluor_series = reconstruct_time_series_numpy(
             raman=np.zeros_like(B_i),
             bases=B_i[np.newaxis, :],
             abundances=np.array([abundances[i]]),
             decay_rates=np.array([decay_rates[i]]),
             time_values=time_values,
             frame_duration=frame_duration,
+            physics_model=physics_model,
         )  # [T, W]
         intensities = fluor_series.mean(axis=1)  # mean across wavenumbers
 
@@ -824,7 +837,7 @@ def plot_temporal_decomposition(
             intensities,
             "o-",
             color=fluor_colors[i],
-            label=f"F{i+1}: τ={τ:.3f}s",
+            label=f"F{i + 1}: τ={τ:.3f}s",
             linewidth=2,
             markersize=6,
         )
@@ -848,7 +861,7 @@ def plot_temporal_decomposition(
 
         τ = 1.0 / decay_rates[i]
         ax.plot(
-            wn, B_i, color=fluor_colors[i], linewidth=1.5, label=f"B{i+1} (τ={τ:.3f}s)"
+            wn, B_i, color=fluor_colors[i], linewidth=1.5, label=f"B{i + 1} (τ={τ:.3f}s)"
         )
 
     ax.set_xlabel("Wavenumber (cm⁻¹)")
@@ -863,10 +876,10 @@ def plot_temporal_decomposition(
 
 
 def visualize_decomposition_3d(
-    data: Union[np.ndarray, SpectralData],
-    decomposition: DecompositionResult,
-    subsample_wn: int = 2,
-    subsample_time: int = 1,
+        data: Union[np.ndarray, SpectralData],
+        decomposition: DecompositionResult,
+        subsample_wn: int = 2,
+        subsample_time: int = 1,
 ):
     """
     Interactive 3D visualisation using plotly (allows rotation/zoom).

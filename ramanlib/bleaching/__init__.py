@@ -13,7 +13,7 @@ where:
 
 from ramanlib.bleaching.physics import (
     reconstruct_time_series,
-    reconstruct_time_series_integrated,
+    reconstruct_time_series_numpy,
     reconstruct_time_series_factored,
     effective_to_physical_abundance,
     physical_to_effective_amplitude,
@@ -89,7 +89,7 @@ from ramanlib.bleaching.visualize import (
 __all__ = [
     # Physics
     "reconstruct_time_series",
-    "reconstruct_time_series_integrated",
+    "reconstruct_time_series_numpy",
     "reconstruct_time_series_factored",
     "effective_to_physical_abundance",
     "physical_to_effective_amplitude",

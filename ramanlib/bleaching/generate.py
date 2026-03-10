@@ -15,8 +15,7 @@ from skimage.metrics import peak_signal_noise_ratio
 from ramanlib.bleaching.physics import (
     l2_normalize,
     interpolate_bases,
-    reconstruct_time_series,
-    reconstruct_time_series_integrated,
+    reconstruct_time_series_numpy
 )
 
 
@@ -25,6 +24,7 @@ class SyntheticConfig:
     """Configuration for synthetic photobleaching dataset generation."""
 
     n_samples: int = 5000
+    physics_model: Literal["integrated", "factored", "pointsample"] = "pointsample"
     laser_nm: float = 532.0
 
     # Temporal parameters
@@ -115,10 +115,10 @@ class SyntheticBleachingDataset:
     """
 
     def __init__(
-        self,
-        config: SyntheticConfig,
-        atcc_xr: xr.Dataset,
-        fluorophore_xr: Optional[xr.Dataset] = None,
+            self,
+            config: SyntheticConfig,
+            atcc_xr: xr.Dataset,
+            fluorophore_xr: Optional[xr.Dataset] = None,
     ):
         """
         Parameters
@@ -178,7 +178,6 @@ class SyntheticBleachingDataset:
         )
         self.fluorophore_names: list[list[str]] = []
         if config.use_shared_bases:
-
             # self.fluorophore_names = np.empty(self.config.n_fluorophores)
             self.shared_bases = self._generate_fluorophore_bases(ref_wavenumbers)
         # if fluorophore_xr is not None and "fluorophore_name" in fluorophore_xr:
@@ -314,9 +313,9 @@ class SyntheticBleachingDataset:
         elif self.config.decay_sampling == "multi_component":
             decay_rates = []
             components = (
-                ["slow"] * ((n_f + 2) // 3)
-                + ["medium"] * ((n_f + 1) // 3)
-                + ["fast"] * (n_f // 3)
+                    ["slow"] * ((n_f + 2) // 3)
+                    + ["medium"] * ((n_f + 1) // 3)
+                    + ["fast"] * (n_f // 3)
             )
             components = components[:n_f]
 
@@ -339,7 +338,7 @@ class SyntheticBleachingDataset:
             )
 
     def _generate_abundances(
-        self, raman_spectrum: np.ndarray, bases: np.ndarray
+            self, raman_spectrum: np.ndarray, bases: np.ndarray
     ) -> np.ndarray:
         """Generate abundances ensuring proper F/R ratio at t=0."""
         n_f = self.config.n_fluorophores
@@ -364,9 +363,9 @@ class SyntheticBleachingDataset:
         return abundances
 
     def _add_noise(
-        self,
-        raman: np.ndarray,
-        fluorescence: np.ndarray,
+            self,
+            raman: np.ndarray,
+            fluorescence: np.ndarray,
     ) -> np.ndarray:
         """Add realistic noise to clean signal."""
         signal = raman + fluorescence
@@ -427,8 +426,8 @@ class SyntheticBleachingDataset:
         psnr_db = peak_signal_noise_ratio(clean, noisy, data_range=data_range)
 
         # SNR (signal power / noise power)
-        signal_power = np.mean(clean**2)
-        noise_power = np.mean(noise**2)
+        signal_power = np.mean(clean ** 2)
+        noise_power = np.mean(noise ** 2)
         snr_db = (
             10 * np.log10(signal_power / noise_power)
             if noise_power > 0
@@ -444,16 +443,17 @@ class SyntheticBleachingDataset:
         }
 
     def _reconstruct_time_series(
-        self,
-        raman: np.ndarray,
-        bases: np.ndarray,
-        abundances: np.ndarray,
-        decay_rates: np.ndarray,
+            self,
+            raman: np.ndarray,
+            bases: np.ndarray,
+            abundances: np.ndarray,
+            decay_rates: np.ndarray,
+            physics_model: str,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Reconstruct bleaching time series using CCD integration model."""
-        clean = reconstruct_time_series_integrated(
+        print(f"Reconstructing according to physics model: {physics_model}")
+        clean = reconstruct_time_series_numpy(
             raman, bases, abundances, decay_rates, self.bleaching_times,
-            frame_duration=self.config.bleaching_interval,
+            frame_duration=self.config.bleaching_interval, physics_model=physics_model
         )
 
         n_t = len(self.bleaching_times)
@@ -520,8 +520,10 @@ class SyntheticBleachingDataset:
 
             decay_rates = self._generate_decay_rates()
             abundances = self._generate_abundances(raman, bases)
+            physics_model = self.config.physics_model
+            print(f"Using physics mode: {physics_model}")
             noisy, clean = self._reconstruct_time_series(
-                raman, bases, abundances, decay_rates
+                raman, bases, abundances, decay_rates, physics_model
             )
 
             intensity_noisy[i] = noisy

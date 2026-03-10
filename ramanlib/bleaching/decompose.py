@@ -15,7 +15,7 @@ from scipy.linalg import lstsq
 from ramanlib.core import SpectralData
 from ramanlib.bleaching.physics import (
     reconstruct_time_series,
-    reconstruct_time_series_integrated,
+    reconstruct_time_series_numpy,
 )
 
 
@@ -26,6 +26,7 @@ class DecompositionResult:
     raman: SpectralData  # (n_wavenumbers,)
     rates: np.ndarray  # (n_fluorophores,)
     # (n_fluorophores,)
+    physics_model: str
     fluorophore_spectra: SpectralData  # (n_fluorophores, n_wavenumbers)
     abundances: Optional[np.ndarray] = None  # (n_fluorophores,) if needed
     mse: float = 0.0
@@ -43,33 +44,22 @@ class DecompositionResult:
 
     def reconstruction(self, time_points: np.ndarray) -> np.ndarray:
         """Reconstruct Y(t, ν) from decomposition parameters."""
-        if self.abundances is None:
-            self.abundances = np.ones(len(self.rates))
-
-        if self.frame_duration is not None:
-            return reconstruct_time_series_integrated(
-                raman=self.raman.intensities,
-                bases=self.fluorophore_spectra.intensities,
-                abundances=self.abundances,
-                decay_rates=self.rates,
-                time_values=time_points,
-                frame_duration=self.frame_duration,
-            )
-
-        return reconstruct_time_series(
+        return reconstruct_time_series_numpy(
             raman=self.raman.intensities,
             bases=self.fluorophore_spectra.intensities,
             abundances=self.abundances,
             decay_rates=self.rates,
             time_values=time_points,
+            frame_duration=self.frame_duration,
+            physics_model=self.physics_model
         )
 
 
 def solve_spectra_given_rates(
-    data: SpectralData,
-    time_values: np.ndarray,
-    decay_rates: np.ndarray,
-    non_negative: bool = True,
+        data: SpectralData,
+        time_values: np.ndarray,
+        decay_rates: np.ndarray,
+        non_negative: bool = True,
 ) -> DecompositionResult:
     """
     Solve for Raman and fluorescence spectra given fixed decay rates.
@@ -129,9 +119,9 @@ def solve_spectra_given_rates(
 
 
 def solve_spectra_with_polynomial_bases(
-    data: SpectralData,
-    decay_rates: np.ndarray,
-    polynomial_degree: int = 3,
+        data: SpectralData,
+        decay_rates: np.ndarray,
+        polynomial_degree: int = 3,
 ) -> DecompositionResult:
     """
     Solve for Raman + polynomial-constrained fluorophore spectra given fixed decay rates.
@@ -209,7 +199,7 @@ def solve_spectra_with_polynomial_bases(
 
             # Create (T, W) matrix of contributions, then flatten
             contribution = (
-                decay_basis[:, k : k + 1] @ poly_basis[:, m : m + 1].T
+                    decay_basis[:, k: k + 1] @ poly_basis[:, m: m + 1].T
             )  # (T, W)
             X[:, coeff_idx] = contribution.flatten()
 
@@ -271,17 +261,17 @@ def solve_spectra_with_polynomial_bases(
 
 
 def decompose(
-    data: Union[SpectralData, np.ndarray],
-    time_points: Optional[np.ndarray] = None,
-    wavenumbers: Optional[np.ndarray] = None,
-    n_fluorophores: int = 2,
-    rate_bounds: tuple = (0.01, 20),
-    maxiter: int = 100,
-    seed: Optional[int] = None,
-    polish: bool = True,
-    verbose: bool = False,
-    use_polynomial_bases: bool = False,  # Default: polynomial constraint (slower but correct!)
-    polynomial_degree: int = 3,  # Polynomial degree for fluorophore bases
+        data: Union[SpectralData, np.ndarray],
+        time_points: Optional[np.ndarray] = None,
+        wavenumbers: Optional[np.ndarray] = None,
+        n_fluorophores: int = 2,
+        rate_bounds: tuple = (0.01, 20),
+        maxiter: int = 100,
+        seed: Optional[int] = None,
+        polish: bool = True,
+        verbose: bool = False,
+        use_polynomial_bases: bool = False,  # Default: polynomial constraint (slower but correct!)
+        polynomial_degree: int = 3,  # Polynomial degree for fluorophore bases
 ) -> DecompositionResult:
     """
     Decompose Y(t, ν) into Raman + fluorescence with exponential decay.
@@ -401,8 +391,8 @@ def decompose(
             )
             decay = np.exp(-rates[:, None] * t[None, :])
             Y_recon = (
-                poly_result.raman.intensities[None, :]
-                + decay.T @ poly_result.fluorophore_spectra.intensities
+                    poly_result.raman.intensities[None, :]
+                    + decay.T @ poly_result.fluorophore_spectra.intensities
             )
             mse = np.mean((spectral_data.intensities - Y_recon) ** 2)
             return (
@@ -418,8 +408,8 @@ def decompose(
             result = solve_spectra_given_rates(spectral_data, t, rates)
             decay = np.exp(-rates[:, None] * t[None, :])
             Y_recon = (
-                result.raman.intensities[None, :]
-                + decay.T @ result.fluorophore_spectra.intensities
+                    result.raman.intensities[None, :]
+                    + decay.T @ result.fluorophore_spectra.intensities
             )
             # Y_recon = reconstruct_time_series(
             #     result.raman.intensities,
@@ -467,9 +457,9 @@ def decompose(
 
 
 def decompose_with_known_rates(
-    Y: np.ndarray,
-    time_points: np.ndarray,
-    rates: np.ndarray,
+        Y: np.ndarray,
+        time_points: np.ndarray,
+        rates: np.ndarray,
 ) -> DecompositionResult:
     """
     Decompose with known decay rates (analytical solution only).
@@ -492,8 +482,8 @@ def decompose_with_known_rates(
     result = solve_spectra_given_rates(Y, time_points, rates)
     decay = np.exp(-rates[:, None] * time_points[None, :])
     Y_recon = (
-        result.raman.intensities[None, :]
-        + decay.T @ result.fluorophore_spectra.intensities
+            result.raman.intensities[None, :]
+            + decay.T @ result.fluorophore_spectra.intensities
     )
     mse = np.mean((Y - Y_recon) ** 2)
 
@@ -506,10 +496,10 @@ def decompose_with_known_rates(
 
 
 def estimate_decay_rates_from_early_frames(
-    data: np.ndarray,
-    time_values: np.ndarray,
-    first_times: int,
-    n_components: int = 3,
+        data: np.ndarray,
+        time_values: np.ndarray,
+        first_times: int,
+        n_components: int = 3,
 ) -> Tuple[np.ndarray, Dict]:
     """
     Estimate decay rates by fitting exponentials to wavenumber-averaged signal.
@@ -551,10 +541,10 @@ def estimate_decay_rates_from_early_frames(
 
     def triple_exp(t, A1, tau1, A2, tau2, A3, tau3, offset):
         return (
-            A1 * np.exp(-t / tau1)
-            + A2 * np.exp(-t / tau2)
-            + A3 * np.exp(-t / tau3)
-            + offset
+                A1 * np.exp(-t / tau1)
+                + A2 * np.exp(-t / tau2)
+                + A3 * np.exp(-t / tau3)
+                + offset
         )
 
     # Select model based on n_components
@@ -595,7 +585,7 @@ def estimate_decay_rates_from_early_frames(
         # Compute fit quality on training data only
         fitted = func(train_times, *popt)
         residuals = avg_decay - fitted
-        ss_res = np.sum(residuals**2)
+        ss_res = np.sum(residuals ** 2)
         ss_tot = np.sum((avg_decay - avg_decay.mean()) ** 2)
         r_squared = 1 - ss_res / ss_tot
 

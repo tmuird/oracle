@@ -28,9 +28,9 @@ except ImportError:
 
 
 def normalize_wavenumbers(
-    wavenumbers: np.ndarray,
-    wn_min: Optional[float] = None,
-    wn_max: Optional[float] = None,
+        wavenumbers: np.ndarray,
+        wn_min: Optional[float] = None,
+        wn_max: Optional[float] = None,
 ) -> Tuple[np.ndarray, float, float]:
     """
     Normalize wavenumbers to [-1, 1] range for numerical stability.
@@ -82,16 +82,16 @@ def build_vandermonde(wn_norm: np.ndarray, degree: int) -> np.ndarray:
         Shape (n_wavenumbers, degree+1)
     """
     n_coeffs = degree + 1
-    return np.stack([wn_norm**k for k in range(n_coeffs)], axis=1)
+    return np.stack([wn_norm ** k for k in range(n_coeffs)], axis=1)
 
 
 # L2 Normalization
 
 
 def l2_normalize(
-    spectra: np.ndarray,
-    axis: int = -1,
-    eps: float = 1e-8,
+        spectra: np.ndarray,
+        axis: int = -1,
+        eps: float = 1e-8,
 ) -> np.ndarray:
     """L2-normalize spectra along specified axis."""
     norm = np.linalg.norm(spectra, axis=axis, keepdims=True)
@@ -102,11 +102,11 @@ def l2_normalize(
 
 
 def reconstruct_time_series(
-    raman: np.ndarray,
-    bases: np.ndarray,
-    abundances: np.ndarray,
-    decay_rates: np.ndarray,
-    time_values: np.ndarray,
+        raman: np.ndarray,
+        bases: np.ndarray,
+        abundances: np.ndarray,
+        decay_rates: np.ndarray,
+        time_values: np.ndarray,
 ) -> np.ndarray:
     """
     Reconstruct bleaching time series from physics parameters.
@@ -137,13 +137,13 @@ def reconstruct_time_series(
     return raman + fluorescence
 
 
-def reconstruct_time_series_integrated(
-    raman: np.ndarray,
-    bases: np.ndarray,
-    abundances: np.ndarray,
-    decay_rates: np.ndarray,
-    time_values: np.ndarray,
-    frame_duration: float = 1.0,
+def reconstruct_time_series_numpy(
+        raman: np.ndarray,
+        bases: np.ndarray,
+        abundances: np.ndarray,
+        decay_rates: np.ndarray,
+        time_values: np.ndarray,
+        frame_duration: float = 1.0,
 ) -> np.ndarray:
     """
     Reconstruct bleaching time series modelling CCD integration.
@@ -194,12 +194,12 @@ def reconstruct_time_series_integrated(
 
 
 def reconstruct_time_series_factored(
-    raman: np.ndarray,
-    bases: np.ndarray,
-    effective_amplitudes: np.ndarray,
-    decay_rates: np.ndarray,
-    time_values: np.ndarray,
-    frame_duration: float = 1.0,
+        raman: np.ndarray,
+        bases: np.ndarray,
+        effective_amplitudes: np.ndarray,
+        decay_rates: np.ndarray,
+        time_values: np.ndarray,
+        frame_duration: float = 1.0,
 ) -> np.ndarray:
     """
     Factored reconstruction that decouples amplitude from decay rate.
@@ -248,9 +248,9 @@ def reconstruct_time_series_factored(
 
 
 def effective_to_physical_abundance(
-    effective_amplitudes: np.ndarray,
-    decay_rates: np.ndarray,
-    frame_duration: float,
+        effective_amplitudes: np.ndarray,
+        decay_rates: np.ndarray,
+        frame_duration: float,
 ) -> np.ndarray:
     """
     Convert effective amplitudes to physical abundances.
@@ -274,16 +274,16 @@ def effective_to_physical_abundance(
         Physical abundances w, same shape as input
     """
     return (
-        effective_amplitudes
-        * decay_rates
-        / (1.0 - np.exp(-decay_rates * frame_duration) + 1e-8)
+            effective_amplitudes
+            * decay_rates
+            / (1.0 - np.exp(-decay_rates * frame_duration) + 1e-8)
     )
 
 
 def physical_to_effective_amplitude(
-    abundances: np.ndarray,
-    decay_rates: np.ndarray,
-    frame_duration: float,
+        abundances: torch.Tensor,
+        decay_rates: torch.Tensor,
+        frame_duration: float,
 ) -> np.ndarray:
     """
     Convert physical abundances to effective amplitudes.
@@ -305,9 +305,9 @@ def physical_to_effective_amplitude(
         Effective amplitudes ã
     """
     return (
-        abundances
-        * (1.0 - np.exp(-decay_rates * frame_duration))
-        / (decay_rates + 1e-8)
+            abundances
+            * (1.0 - np.exp(-decay_rates * frame_duration))
+            / (decay_rates + 1e-8)
     )
 
 
@@ -315,9 +315,9 @@ def physical_to_effective_amplitude(
 
 
 def fit_polynomial_bases(
-    bases: np.ndarray,
-    wavenumbers: np.ndarray,
-    degree: int,
+        bases: np.ndarray,
+        wavenumbers: np.ndarray,
+        degree: int,
 ) -> Tuple[np.ndarray, float, float]:
     """
     Fit polynomial coefficients to fluorophore bases in log-space.
@@ -363,10 +363,10 @@ def fit_polynomial_bases(
 
 
 def evaluate_polynomial_bases(
-    log_poly_coeffs: np.ndarray,
-    wavenumbers: np.ndarray,
-    wn_min: Optional[float] = None,
-    wn_max: Optional[float] = None,
+        log_poly_coeffs: np.ndarray,
+        wavenumbers: np.ndarray,
+        wn_min: Optional[float] = None,
+        wn_max: Optional[float] = None,
 ) -> np.ndarray:
     """
     Evaluate polynomial fluorophore bases in log-space, then exponentiate.
@@ -409,11 +409,11 @@ def evaluate_polynomial_bases(
 
 
 def interpolate_bases(
-    bases: np.ndarray,
-    source_wn: np.ndarray,
-    target_wn: np.ndarray,
-    method: str = "pchip",
-    smooth_sigma: float = 0.0,
+        bases: np.ndarray,
+        source_wn: np.ndarray,
+        target_wn: np.ndarray,
+        method: str = "pchip",
+        smooth_sigma: float = 0.0,
 ) -> np.ndarray:
     """
     Interpolate fluorophore bases from one wavenumber axis onto another.
@@ -498,9 +498,9 @@ def interpolate_bases(
 if TORCH_AVAILABLE:
 
     def normalize_wavenumbers_torch(
-        wavenumbers: "torch.Tensor",
-        wn_min: Optional["torch.Tensor"] = None,
-        wn_max: Optional["torch.Tensor"] = None,
+            wavenumbers: "torch.Tensor",
+            wn_min: Optional["torch.Tensor"] = None,
+            wn_max: Optional["torch.Tensor"] = None,
     ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
         """Normalize wavenumbers to [-1, 1] (PyTorch version)."""
         if wn_min is None:
@@ -511,11 +511,12 @@ if TORCH_AVAILABLE:
         wn_norm = 2.0 * (wavenumbers - wn_min) / (wn_max - wn_min + 1e-8) - 1.0
         return wn_norm, wn_min, wn_max
 
+
     def evaluate_polynomial_bases_torch(
-        log_poly_coeffs: "torch.Tensor",
-        wavenumbers: "torch.Tensor",
-        wn_min: Optional[float] = None,
-        wn_max: Optional[float] = None,
+            log_poly_coeffs: "torch.Tensor",
+            wavenumbers: "torch.Tensor",
+            wn_min: Optional[float] = None,
+            wn_max: Optional[float] = None,
     ) -> "torch.Tensor":
         """
         Evaluate polynomial fluorophore bases in log-space, then exponentiate.
@@ -556,30 +557,33 @@ if TORCH_AVAILABLE:
 
         return bases
 
+
     def build_vandermonde_torch(
-        wn_norm: "torch.Tensor",
-        degree: int,
+            wn_norm: "torch.Tensor",
+            degree: int,
     ) -> "torch.Tensor":
         """Build Vandermonde matrix (PyTorch version)."""
         n_coeffs = degree + 1
-        return torch.stack([wn_norm**k for k in range(n_coeffs)], dim=1)
+        return torch.stack([wn_norm ** k for k in range(n_coeffs)], dim=1)
+
 
     def l2_normalize_torch(
-        spectra: "torch.Tensor",
-        dim: int = -1,
-        eps: float = 1e-8,
+            spectra: "torch.Tensor",
+            dim: int = -1,
+            eps: float = 1e-8,
     ) -> "torch.Tensor":
         """L2-normalize spectra (PyTorch version)."""
         norm = torch.norm(spectra, p=2, dim=dim, keepdim=True)
         return spectra / (norm + eps)
 
+
     def reconstruct_time_series_torch(
-        raman: torch.Tensor,  # [Batch, Wavenumbers]
-        bases: torch.Tensor,  # [Fluors, Wavenumbers] (Global Parameter)
-        abundances: torch.Tensor,  # [Batch, Fluors]
-        decay_rates: torch.Tensor,  # [Batch, Fluors]
-        time_values: torch.Tensor,  # [Timepoints] (Buffer)
-        frame_duration: float = 0.1,
+            raman: torch.Tensor,  # [Batch, Wavenumbers]
+            bases: torch.Tensor,  # [Fluors, Wavenumbers] (Global Parameter)
+            abundances: torch.Tensor,  # [Batch, Fluors]
+            decay_rates: torch.Tensor,  # [Batch, Fluors]
+            time_values: torch.Tensor,  # [Timepoints] (Buffer)
+            frame_duration: float = 0.1,
     ) -> torch.Tensor:
         """
         Batch-Safe Physics Reconstruction using Matrix Multiplication.
@@ -612,8 +616,7 @@ if TORCH_AVAILABLE:
         # abundances: [B, F] -> [B, F, 1]
         w = abundances.unsqueeze(2)
 
-        # bases: [F, W] -> [1, F, W] (Broadcasts to Batch size)
-        B = bases.unsqueeze(0)
+        B = bases
 
         # Result: [B, F, W]
         weighted_bases = w * B
@@ -631,13 +634,14 @@ if TORCH_AVAILABLE:
         # return [B, W, T] for CNN
         return total_signal.transpose(1, 2)
 
+
     def reconstruct_time_series_integrated_torch(
-        raman: torch.Tensor,  # [Batch, Wavenumbers]
-        bases: torch.Tensor,  # [Fluors, Wavenumbers] (Global Parameter)
-        abundances: torch.Tensor,  # [Batch, Fluors]
-        decay_rates: torch.Tensor,  # [Batch, Fluors]
-        time_values: torch.Tensor,  # [Timepoints] - start time of each frame
-        frame_duration: float = 0.1,  # Integration time per frame (seconds)
+            raman: torch.Tensor,  # [Batch, Wavenumbers]
+            bases: torch.Tensor,  # [Fluors, Wavenumbers] (Global Parameter)
+            abundances: torch.Tensor,  # [Batch, Fluors]
+            decay_rates: torch.Tensor,  # [Batch, Fluors]
+            time_values: torch.Tensor,  # [Timepoints] - start time of each frame
+            frame_duration: float = 0.1,  # Integration time per frame (seconds)
     ) -> torch.Tensor:
         """
         Physically correct reconstruction modelling CCD integration.
@@ -674,7 +678,7 @@ if TORCH_AVAILABLE:
         #
         # Result: [B, T, F]
         decay_matrix = (torch.exp(-lam * t_start) - torch.exp(-lam * t_end)) / (
-            lam + 1e-8
+                lam + 1e-8
         )
 
         # Weighted bases: [B, F, W]
@@ -693,13 +697,14 @@ if TORCH_AVAILABLE:
         # return [B, W, T]
         return total_signal.transpose(1, 2)
 
+
     def reconstruct_time_series_factored_torch(
-        raman: torch.Tensor,  # [Batch, Wavenumbers]
-        bases: torch.Tensor,  # [Fluors, Wavenumbers] or [Batch, Fluors, Wavenumbers]
-        effective_amplitudes: torch.Tensor,  # [Batch, Fluors] — ã values
-        decay_rates: torch.Tensor,  # [Batch, Fluors]
-        time_values: torch.Tensor,  # [Timepoints]
-        frame_duration: float = 0.1,
+            raman: torch.Tensor,  # [Batch, Wavenumbers]
+            bases: torch.Tensor,  # [Fluors, Wavenumbers] or [Batch, Fluors, Wavenumbers]
+            effective_amplitudes: torch.Tensor,  # [Batch, Fluors] — ã values
+            decay_rates: torch.Tensor,  # [Batch, Fluors]
+            time_values: torch.Tensor,  # [Timepoints]
+            frame_duration: float = 0.1,
     ) -> torch.Tensor:
         """
         Factored reconstruction that decouples amplitude from decay rate.
@@ -743,10 +748,11 @@ if TORCH_AVAILABLE:
         # return [B, W, T]
         return total_signal.transpose(1, 2)
 
+
     def effective_to_physical_abundance_torch(
-        effective_amplitudes: torch.Tensor,
-        decay_rates: torch.Tensor,
-        frame_duration: float,
+            effective_amplitudes: torch.Tensor,
+            decay_rates: torch.Tensor,
+            frame_duration: float,
     ) -> torch.Tensor:
         """
         Convert effective amplitudes to physical abundances.
@@ -768,7 +774,74 @@ if TORCH_AVAILABLE:
             Physical abundances w
         """
         return (
-            effective_amplitudes
-            * decay_rates
-            / (1.0 - torch.exp(-decay_rates * frame_duration) + 1e-8)
+                effective_amplitudes
+                * decay_rates
+                / (1.0 - torch.exp(-decay_rates * frame_duration) + 1e-8)
         )
+
+
+def reconstruct_time_series_numpy(
+        raman: np.ndarray,
+        bases: np.ndarray,
+        abundances: np.ndarray,
+        decay_rates: np.ndarray,
+        time_values: np.ndarray,
+        physics_model: str,
+        frame_duration: float = 1.0,
+
+) -> np.ndarray:
+    """
+    Wrapper to use the torch-based factored reconstruction from numpy code (visualization).
+    Handles conversion from physical abundances to effective amplitudes.
+    Output shape: [Time, Wavenumbers] (same as numpy version).
+    """
+    # Convert to torch
+    raman_t = torch.from_numpy(raman).float().unsqueeze(0)  # [1, W]
+    bases_t = torch.from_numpy(bases).float()  # [F, W] — torch fns add batch dim internally
+    abundances_t = torch.from_numpy(abundances).float().unsqueeze(0)  # [1, F]
+    decay_rates_t = torch.from_numpy(decay_rates).float().unsqueeze(0)  # [1, F]
+    time_values_t = torch.from_numpy(time_values).float()  # [T]
+
+    # # Call Factored Reconstruction -> [B, W, T]
+    # recon_t = reconstruct_time_series_factored_torch(
+    #     raman_t,
+    #     bases_t,
+    #     effective_amplitudes_t,
+    #     decay_rates_t,
+    #     time_values_t,
+    #     frame_duration)
+
+    if physics_model == "integrated":
+        x_recon = reconstruct_time_series_integrated_torch(
+            raman=raman_t,
+            bases=bases_t,
+            abundances=abundances_t,
+            decay_rates=decay_rates_t,
+            time_values=time_values_t,
+            frame_duration=frame_duration,
+        )
+    elif physics_model == "pointsample":
+        x_recon = reconstruct_time_series_torch(
+            raman=raman_t,
+            bases=bases_t,
+            abundances=abundances_t,
+            decay_rates=decay_rates_t,
+            time_values=time_values_t,
+            frame_duration=frame_duration,
+        )
+    else:  # "factored" (default)
+        # Convert Physical Abundances -> Effective Amplitudes
+        effective_amplitudes_t = physical_to_effective_amplitude(
+            abundances_t, decay_rates_t, frame_duration
+        )
+        x_recon = reconstruct_time_series_factored_torch(
+            raman=raman_t,
+            bases=bases_t,
+            effective_amplitudes=effective_amplitudes_t,
+            decay_rates=decay_rates_t,
+            time_values=time_values_t,
+            frame_duration=frame_duration,
+        )
+
+    # Convert to [T, W] numpy: [1, W, T] -> [1, T, W] -> [T, W]
+    return x_recon.transpose(1, 2).squeeze(0).numpy()

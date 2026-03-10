@@ -23,7 +23,7 @@ from ramanlib.bleaching.physics import (
     fit_polynomial_bases,
     build_vandermonde_torch,
     l2_normalize_torch,
-    reconstruct_time_series_integrated,
+    reconstruct_time_series_numpy,
     reconstruct_time_series_integrated_torch,
     reconstruct_time_series_torch,
     reconstruct_time_series_factored_torch,
