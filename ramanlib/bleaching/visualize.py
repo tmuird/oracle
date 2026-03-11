@@ -1,17 +1,15 @@
 """Visualization utilities for bleaching decomposition."""
 
-from typing import Optional, Dict, Union
-import numpy as np
-import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-import ramanspy as rp
+from typing import Optional, Union
 
-from ramanlib.core import SpectralData
+import numpy as np
 import pandas as pd
+
 from ramanlib.bleaching.physics import (
     interpolate_bases,
     reconstruct_time_series_numpy,
 )
+from ramanlib.core import SpectralData
 
 
 def visualize_data_3d(
@@ -517,7 +515,9 @@ def get_total_fluorescence(
         ds: xr.Dataset,
         sample_idx: int,
         time_seconds: float,
+        physics_model: str,
         frame_duration: Optional[float] = None,
+
 ) -> np.ndarray:
     """
     Compute total fluorescence at a given time using CCD integration model.
@@ -797,7 +797,7 @@ def plot_temporal_decomposition(
     # Top right: Total fluorescence over time
     ax = axes[0, 1]
     for t_idx, t in enumerate(time_values):
-        fluor = get_total_fluorescence(ds, sample_idx, t)
+        fluor = get_total_fluorescence(ds, sample_idx, t, physics_model)
         ax.plot(wn, fluor, color=time_colors[t_idx], alpha=0.8, label=f"t={t:.2f}s")
 
     ax.set_xlabel("Wavenumber (cm⁻¹)")
@@ -903,7 +903,6 @@ def visualize_decomposition_3d(
         Plotly figure object
     """
     import plotly.graph_objects as go
-    from ramanlib.core import SpectralData
 
     raman = decomposition.raman.intensities
     Y = data.intensities

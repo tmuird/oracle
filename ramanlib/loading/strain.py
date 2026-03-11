@@ -1,7 +1,7 @@
 """
-StrainDataset for bacterial Raman spectroscopy data.
+RamanDataset for Raman spectroscopy data.
 
-Handles ATCC bacterial spectra with multiple strains, integration times,
+Handles spectra with multiple strains, integration times,
 and per-sample wavenumber calibration.
 """
 
@@ -24,12 +24,13 @@ from ramanlib.loading.base import (
 
 try:
     import ramanspy as rp
+
     HAS_RAMANSPY = True
 except ImportError:
     HAS_RAMANSPY = False
 
 
-class StrainDataset:
+class RamanDataset:
     """
     Container for bacterial Raman spectroscopy data with unified wavenumber axis.
 
@@ -41,7 +42,7 @@ class StrainDataset:
         self.strains: Dict = {}
         self.unique_axes: List[np.ndarray] = []
 
-    def add_spectrum(self, spectrum, metadata: Dict):
+    def add_spectrum(self, spectrum, metadata: Optional[dict] = None):
         """
         Add spectrum and register its axis.
 
@@ -52,7 +53,9 @@ class StrainDataset:
         metadata : dict
             Metadata including 'strain', 'species', 'gram', etc.
         """
-        strain_id = metadata["strain"]
+        if metadata is None:
+            metadata = {}
+        strain_id = metadata.get("strain", 0)
         axis_id = self._get_or_create_axis_id(spectrum.spectral_axis)
 
         if strain_id not in self.strains:
@@ -68,7 +71,9 @@ class StrainDataset:
         self.strains[strain_id]["axis_ids"].append(axis_id)
         self.strains[strain_id]["metadata"].append(metadata)
 
-    def _get_or_create_axis_id(self, new_axis: np.ndarray, tolerance: float = 1e-4) -> int:
+    def _get_or_create_axis_id(
+        self, new_axis: np.ndarray, tolerance: float = 1e-4
+    ) -> int:
         """Check if axis exists in registry. Returns index of axis."""
         for i, existing_axis in enumerate(self.unique_axes):
             if len(existing_axis) != len(new_axis):
@@ -102,8 +107,10 @@ class StrainDataset:
         """Print dataset summary."""
         print(f"\nLoaded {len(self.strains)} strains:")
         for strain_id, data in self.strains.items():
-            print(f"  Strain {strain_id} ({data['species']}, {data['gram']}): "
-                  f"{len(data['spectra'])} spectra")
+            print(
+                f"  Strain {strain_id} ({data['species']}, {data['gram']}): "
+                f"{len(data['spectra'])} spectra"
+            )
 
     def to_xarray(
         self,
@@ -263,7 +270,9 @@ class StrainDataset:
                                 spectrum_raw, current_axis, baseline_correction
                             )
 
-                            if detect_dropout(spectrum_processed, outlier_mad_threshold):
+                            if detect_dropout(
+                                spectrum_processed, outlier_mad_threshold
+                            ):
                                 dropout_removal += 1
                                 has_outlier = True
                                 break
@@ -286,7 +295,9 @@ class StrainDataset:
                         current_axis_id = axis_ids[spectrum_idx]
                         current_axis = self.unique_axes[current_axis_id]
 
-                        snr_value = compute_snr(spectrum_raw, current_axis, snr_silent_region)
+                        snr_value = compute_snr(
+                            spectrum_raw, current_axis, snr_silent_region
+                        )
                         snr_dict[(strain_id, position_id)] = snr_value
                         species_dict[(strain_id, position_id)] = species
 
@@ -303,28 +314,39 @@ class StrainDataset:
         if remove_outliers:
             print("\n=== Outlier Removal Summary ===")
             for strain_id, stats in removal_dict.items():
-                print(f"Strain {strain_id}: Orig: {stats['n_original_positions']}, "
-                      f"Rm: {stats['total_removed']} (Sat: {stats['saturation_removed']}, "
-                      f"Drop: {stats['dropout_removed']})")
+                print(
+                    f"Strain {strain_id}: Orig: {stats['n_original_positions']}, "
+                    f"Rm: {stats['total_removed']} (Sat: {stats['saturation_removed']}, "
+                    f"Drop: {stats['dropout_removed']})"
+                )
 
         # SNR filtering
         if aggressive_snr_filter:
             print("\n=== SNR Filtering ===")
             ref_time = snr_reference_time or all_integration_times[0]
-            print(f"Reference time: {ref_time}, silent region: {snr_silent_region[0]}-{snr_silent_region[1]} cm⁻¹")
-            print(f"Filter mode: {'per-species' if snr_filter_per_species else 'global'}")
+            print(
+                f"Reference time: {ref_time}, silent region: {snr_silent_region[0]}-{snr_silent_region[1]} cm⁻¹"
+            )
+            print(
+                f"Filter mode: {'per-species' if snr_filter_per_species else 'global'}"
+            )
 
             if snr_filter_per_species:
                 sample_pairs = self._apply_per_species_snr_filter(
                     sample_pairs, snr_dict, species_dict, snr_quantile_filter
                 )
             else:
-                snr_values = np.array([snr_dict.get(pair, np.nan) for pair in sample_pairs])
+                snr_values = np.array(
+                    [snr_dict.get(pair, np.nan) for pair in sample_pairs]
+                )
                 valid_snr_mask = ~np.isnan(snr_values)
                 valid_snr = snr_values[valid_snr_mask]
 
                 if len(valid_snr) > 0:
-                    q_lower_pct, q_upper_pct = snr_quantile_filter[0] * 100, snr_quantile_filter[1] * 100
+                    q_lower_pct, q_upper_pct = (
+                        snr_quantile_filter[0] * 100,
+                        snr_quantile_filter[1] * 100,
+                    )
                     q_lower = np.percentile(valid_snr, q_lower_pct)
                     q_upper = np.percentile(valid_snr, q_upper_pct)
                     snr_filter_mask = (snr_values >= q_lower) & (snr_values <= q_upper)
@@ -334,12 +356,18 @@ class StrainDataset:
                     n_q4 = np.sum(valid_snr_mask & (snr_values > q_upper))
                     n_kept = np.sum(snr_filter_mask)
 
-                    print(f"Global thresholds: Q{int(q_lower_pct)} = {q_lower:.2f}, Q{int(q_upper_pct)} = {q_upper:.2f}")
-                    print(f"Removed Q1: {n_q1}, Q4: {n_q4} ({(n_q1 + n_q4) / n_before * 100:.1f}%)")
+                    print(
+                        f"Global thresholds: Q{int(q_lower_pct)} = {q_lower:.2f}, Q{int(q_upper_pct)} = {q_upper:.2f}"
+                    )
+                    print(
+                        f"Removed Q1: {n_q1}, Q4: {n_q4} ({(n_q1 + n_q4) / n_before * 100:.1f}%)"
+                    )
                     print(f"Kept: {n_kept}/{n_before} ({n_kept / n_before * 100:.1f}%)")
 
                     sample_pairs = [
-                        pair for pair, keep in zip(sample_pairs, snr_filter_mask) if keep
+                        pair
+                        for pair, keep in zip(sample_pairs, snr_filter_mask)
+                        if keep
                     ]
 
         n_samples = len(sample_pairs)
@@ -358,7 +386,9 @@ class StrainDataset:
 
             if len(set(lengths)) > 1:
                 final_n_pixels = min(lengths)
-                print(f"  Warning: Variable crop lengths {set(lengths)}. Truncating to {final_n_pixels}.")
+                print(
+                    f"  Warning: Variable crop lengths {set(lengths)}. Truncating to {final_n_pixels}."
+                )
             else:
                 final_n_pixels = lengths[0]
         else:
@@ -366,8 +396,12 @@ class StrainDataset:
                 crop_indices_map[i] = slice(None)
 
         # Allocate arrays
-        intensity_array = np.full((n_samples, n_times, final_n_pixels), np.nan, dtype=np.float32)
-        wavenumber_array = np.full((n_samples, final_n_pixels), np.nan, dtype=np.float32)
+        intensity_array = np.full(
+            (n_samples, n_times, final_n_pixels), np.nan, dtype=np.float32
+        )
+        wavenumber_array = np.full(
+            (n_samples, final_n_pixels), np.nan, dtype=np.float32
+        )
 
         metadata = defaultdict(list)
         n_despiked = 0
@@ -391,7 +425,9 @@ class StrainDataset:
             metadata["spectrum_count"].append(position_mask.sum())
 
             for time_idx, int_time in enumerate(all_integration_times):
-                time_mask = position_mask & (metadata_df["integration_time"] == int_time)
+                time_mask = position_mask & (
+                    metadata_df["integration_time"] == int_time
+                )
 
                 if time_mask.any():
                     idx = np.where(time_mask)[0][0]
@@ -402,7 +438,9 @@ class StrainDataset:
 
                     if despike and HAS_RAMANSPY:
                         n_despiked += 1
-                        container = rp.SpectralContainer(raw_spectrum[np.newaxis, :], full_axis)
+                        container = rp.SpectralContainer(
+                            raw_spectrum[np.newaxis, :], full_axis
+                        )
                         raw_spectrum = (
                             rp.preprocessing.despike.WhitakerHayes()
                             .apply(container)
@@ -442,12 +480,29 @@ class StrainDataset:
                         "despiked": despike,
                     },
                 ),
-                "species": (["sample"], metadata["species"], {"long_name": "Bacterial species"}),
-                "gram": (["sample"], metadata["gram"], {"long_name": "Gram staining type"}),
-                "strain_id": (["sample"], np.array(metadata["strain_id"], dtype="int32")),
-                "position_id": (["sample"], np.array(metadata["position_id"], dtype="int32")),
+                "species": (
+                    ["sample"],
+                    metadata["species"],
+                    {"long_name": "Bacterial species"},
+                ),
+                "gram": (
+                    ["sample"],
+                    metadata["gram"],
+                    {"long_name": "Gram staining type"},
+                ),
+                "strain_id": (
+                    ["sample"],
+                    np.array(metadata["strain_id"], dtype="int32"),
+                ),
+                "position_id": (
+                    ["sample"],
+                    np.array(metadata["position_id"], dtype="int32"),
+                ),
                 "date": (["sample"], metadata["date"]),
-                "spectrum_count": (["sample"], np.array(metadata["spectrum_count"], dtype="int32")),
+                "spectrum_count": (
+                    ["sample"],
+                    np.array(metadata["spectrum_count"], dtype="int32"),
+                ),
             },
             coords={
                 "wavenumber": (["sample", "pixel"], wavenumber_array),
@@ -466,16 +521,18 @@ class StrainDataset:
         if baseline_correction and HAS_RAMANSPY:
             # Normalize baseline_correction parameter
             if baseline_correction is True:
-                baseline_method = 'imodpoly'
+                baseline_method = "imodpoly"
             else:
                 baseline_method = baseline_correction.lower()
 
             # Map method names to RamanSpy classes
             method_map = {
-                'modpoly': rp.preprocessing.baseline.ModPoly(),
-                'airpls': lambda: rp.preprocessing.baseline.AIRPLS(lam=1e7),  # Very smooth baseline to minimize negatives
-                'asls': lambda: rp.preprocessing.baseline.ASLS(lam=1e6, p=0.01),
-                'imodpoly': rp.preprocessing.baseline.IModPoly(),
+                "modpoly": rp.preprocessing.baseline.ModPoly(),
+                "airpls": lambda: rp.preprocessing.baseline.AIRPLS(
+                    lam=1e7
+                ),  # Very smooth baseline to minimize negatives
+                "asls": lambda: rp.preprocessing.baseline.ASLS(lam=1e6, p=0.01),
+                "imodpoly": rp.preprocessing.baseline.IModPoly(),
             }
 
             if baseline_method not in method_map:
@@ -492,7 +549,9 @@ class StrainDataset:
 
             # Get the baseline correction method
             baseline_processor = method_map[baseline_method]
-            if callable(baseline_processor) and not hasattr(baseline_processor, 'apply'):
+            if callable(baseline_processor) and not hasattr(
+                baseline_processor, "apply"
+            ):
                 baseline_processor = baseline_processor()  # Call lambda to get instance
 
             for s in range(n_samples):
@@ -500,15 +559,19 @@ class StrainDataset:
                 for t in range(n_times):
                     spec = raw_int[s, t, :]
                     if not np.isnan(spec).all():
-                        container = rp.SpectralContainer(spec[np.newaxis, :], sample_axis)
-                        corrected_data[s, t, :] = (
-                            baseline_processor.apply(container).spectral_data[0]
+                        container = rp.SpectralContainer(
+                            spec[np.newaxis, :], sample_axis
                         )
+                        corrected_data[s, t, :] = baseline_processor.apply(
+                            container
+                        ).spectral_data[0]
 
             ds["intensity_baseline_corrected"] = (
                 ["sample", "integration_time", "pixel"],
                 corrected_data.astype(np.float32),
-                {"long_name": f"Baseline-corrected Raman intensity ({baseline_method.upper()})"},
+                {
+                    "long_name": f"Baseline-corrected Raman intensity ({baseline_method.upper()})"
+                },
             )
 
             # Clip negative values (artifacts from baseline overcorrection)
@@ -517,7 +580,9 @@ class StrainDataset:
                 n_total = corrected_data.size
                 pct_negative = 100 * n_negative / n_total
                 min_value = corrected_data.min()
-                print(f"  WARNING: Found {n_negative:,}/{n_total:,} ({pct_negative:.2f}%) negative values (min={min_value:.2f})")
+                print(
+                    f"  WARNING: Found {n_negative:,}/{n_total:,} ({pct_negative:.2f}%) negative values (min={min_value:.2f})"
+                )
                 print(f"  Clipping negatives to zero...")
                 corrected_data = np.maximum(corrected_data, 0.0)
                 ds["intensity_baseline_corrected"].values[:] = corrected_data
@@ -527,7 +592,11 @@ class StrainDataset:
         # Post-processing: normalization
         if normalise:
             print("\nApplying normalisation")
-            target_var = "intensity_baseline_corrected" if baseline_correction else "intensity_raw"
+            target_var = (
+                "intensity_baseline_corrected"
+                if baseline_correction
+                else "intensity_raw"
+            )
             ds = add_normalized_intensity(ds, ds[target_var], method=method)
 
         # Post-processing: misalignment removal
@@ -538,8 +607,13 @@ class StrainDataset:
                 ref_time = misalignment_reference_time or all_integration_times[-1]
                 low_time = misalignment_low_time or all_integration_times[0]
 
-                if ref_time not in all_integration_times or low_time not in all_integration_times:
-                    print(f"Warning: Specified times ({low_time}, {ref_time}) not in dataset.")
+                if (
+                    ref_time not in all_integration_times
+                    or low_time not in all_integration_times
+                ):
+                    print(
+                        f"Warning: Specified times ({low_time}, {ref_time}) not in dataset."
+                    )
                 else:
                     print(f"\n=== Quality Control: Removing Misaligned Pairs ===")
                     print(f"Comparing {low_time} vs {ref_time}")
@@ -548,7 +622,9 @@ class StrainDataset:
                         misalignment_metrics = ["pearson", "cosine"]
 
                     ds, _ = filter_misaligned_pairs(
-                        ds, low_time, ref_time,
+                        ds,
+                        low_time,
+                        ref_time,
                         threshold=misalignment_threshold,
                         method=misalignment_method,
                         metrics=misalignment_metrics,
@@ -573,8 +649,12 @@ class StrainDataset:
             snr = snr_dict.get(pair, np.nan)
             species_samples[species].append((pair, snr))
 
-        print(f"\nPer-species SNR filtering (keeping Q{int(q_lower_pct)}-Q{int(q_upper_pct)}):")
-        print(f"{'Species':<30} {'Before':>8} {'After':>8} {'Q_low':>8} {'Q_high':>8} {'Removed':>8}")
+        print(
+            f"\nPer-species SNR filtering (keeping Q{int(q_lower_pct)}-Q{int(q_upper_pct)}):"
+        )
+        print(
+            f"{'Species':<30} {'Before':>8} {'After':>8} {'Q_low':>8} {'Q_high':>8} {'Removed':>8}"
+        )
         print("-" * 80)
 
         filtered_pairs = []
@@ -591,7 +671,9 @@ class StrainDataset:
             valid_snr = snr_values[valid_mask]
 
             if len(valid_snr) < 4:
-                print(f"{species:<30} {n_before:>8} {n_before:>8} {'N/A':>8} {'N/A':>8} {0:>8} (too few samples)")
+                print(
+                    f"{species:<30} {n_before:>8} {n_before:>8} {'N/A':>8} {'N/A':>8} {0:>8} (too few samples)"
+                )
                 filtered_pairs.extend([pair for pair, _ in samples])
                 total_after += n_before
                 continue
@@ -610,12 +692,18 @@ class StrainDataset:
             n_removed = n_before - n_after
             total_after += n_after
 
-            print(f"{species:<30} {n_before:>8} {n_after:>8} {q_lower:>8.2f} {q_upper:>8.2f} {n_removed:>8}")
+            print(
+                f"{species:<30} {n_before:>8} {n_after:>8} {q_lower:>8.2f} {q_upper:>8.2f} {n_removed:>8}"
+            )
             filtered_pairs.extend(kept_samples)
 
         print("-" * 80)
-        print(f"{'TOTAL':<30} {total_before:>8} {total_after:>8} {'':<8} {'':<8} {total_before - total_after:>8}")
-        print(f"\nRetained {total_after}/{total_before} samples ({total_after / total_before * 100:.1f}%)")
+        print(
+            f"{'TOTAL':<30} {total_before:>8} {total_after:>8} {'':<8} {'':<8} {total_before - total_after:>8}"
+        )
+        print(
+            f"\nRetained {total_after}/{total_before} samples ({total_after / total_before * 100:.1f}%)"
+        )
 
         return filtered_pairs
 
@@ -639,9 +727,13 @@ DEFAULT_STRAIN_INFO = {
 
 
 def load_data(
-    data_folder: str,
+    data_folder: Optional[str] = None,
     strain_info: Optional[Dict] = None,
-) -> StrainDataset:
+    simulate: bool = False,
+    n_samples: int = 100,
+    spectral_axis: Optional[List[float]] = None,
+    seed: Optional[int] = None,
+) -> RamanDataset:
     """
     Load ATCC bacterial Raman spectra from folder.
 
@@ -657,7 +749,7 @@ def load_data(
 
     Returns
     -------
-    StrainDataset
+    RamanDataset
         Loaded dataset
 
     Examples
@@ -668,21 +760,43 @@ def load_data(
     if not HAS_RAMANSPY:
         raise ImportError("ramanspy is required for loading ATCC data")
 
-    data_folder = Path(data_folder)
+    loaded_count = 0
+    errors = []
+    if not simulate:
+        if data_folder is None:
+            raise ValueError("data_folder must be specified for non-simulation")
+        else:
+            dataset = load_from_txt(data_folder, strain_info)
+
+    else:
+        if data_folder is not None:
+            print(f"Warning: data_folder is ignored in simulation mode")
+        dataset = simulate_data(n_samples=n_samples, spectral_axis=spectral_axis, seed=seed)
+
+    if errors:
+        print(f"\nWarning: {len(errors)} files failed to load")
+        if len(errors) <= 3:
+            for fname, error in errors:
+                print(f"  {fname}: {error}")
+
+    print(f"\nSuccessfully loaded {loaded_count} spectra")
+    dataset.summary()
+    return dataset
+
+
+def load_from_txt(data_folder: str, strain_info: Optional[Dict] = None) -> RamanDataset:
     if strain_info is None:
         strain_info = DEFAULT_STRAIN_INFO
-
+    data_folder = Path(data_folder)
+    dataset = RamanDataset()
+    loaded_count = 0
+    errors = []
     txt_files = sorted(data_folder.glob("*.txt"))
     print(f"Found {len(txt_files)} spectrum files")
 
     pattern = re.compile(
         r"(\d{8})_(\d+)_([0-9.]+s)_--Position (\d+)--Spectrum--(\d+)--Spec\.Data (\d+) (\d+)\.txt"
     )
-
-    dataset = StrainDataset()
-    loaded_count = 0
-    errors = []
-
     for filepath in txt_files:
         match = pattern.match(filepath.name)
         if not match:
@@ -710,13 +824,45 @@ def load_data(
             loaded_count += 1
         except Exception as e:
             errors.append((filepath.name, str(e)))
+    return dataset
 
-    if errors:
-        print(f"\nWarning: {len(errors)} files failed to load")
-        if len(errors) <= 3:
-            for fname, error in errors:
-                print(f"  {fname}: {error}")
 
-    print(f"\nSuccessfully loaded {loaded_count} spectra")
-    dataset.summary()
+def simulate_data(
+    n_samples: int = 100,
+    spectral_axis: Optional[List[float]] = None,
+    realistic=False,
+    seed: Optional[int] = None,
+) -> RamanDataset:
+    """Simulate a dataset with random Raman spectra using ramanspy.
+
+    In ramanspy, n_bands is the number of spectral channels (== len(spectral_axis)),
+    not the number of peaks — peak generation is handled internally. Each sample
+    gets an independently seeded random spectrum on the same wavenumber axis.
+    All samples share integration_time="10s" and strain=0 so the resulting
+    RamanDataset converts cleanly to xarray via to_xarray().
+    """
+    if not HAS_RAMANSPY:
+        raise ImportError("ramanspy is required for simulate_data")
+
+    if spectral_axis is None:
+        spectral_axis = np.linspace(500, 1700, 1000)
+
+    n_bands = len(spectral_axis)
+    dataset = RamanDataset()
+
+    for i in range(n_samples):
+        spectrum = rp.synth.generate_spectra(
+            1, n_bands, realistic=realistic, spectral_axis=spectral_axis,
+            seed=None if seed is None else seed + i,
+        )[0]
+        metadata = {
+            "strain": 0,
+            "integration_time": "10s",
+            "position": i,
+            "date": "19700101",
+            "species": "Synthetic",
+            "gram": "Unknown",
+        }
+        dataset.add_spectrum(spectrum, metadata)
+
     return dataset

@@ -7,8 +7,9 @@ Provides loaders for:
 """
 
 from ramanlib.loading.strain import (
-    StrainDataset,
+    RamanDataset,
     load_data,
+    simulate_data,
     DEFAULT_STRAIN_INFO,
 )
 
@@ -31,10 +32,11 @@ from ramanlib.loading.base import (
 
 __all__ = [
     # Main classes
-    "StrainDataset",
+    "RamanDataset",
     "SimpleDataset",
     # Loading functions
     "load_data",
+    "simulate_data",
     "load_simple_data",
     # Constants
     "DEFAULT_STRAIN_INFO",

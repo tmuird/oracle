@@ -26,7 +26,7 @@ class SyntheticConfig:
     n_samples: int = 5000
     physics_model: Literal["integrated", "factored", "pointsample"] = "pointsample"
     laser_nm: float = 532.0
-
+    simulate_raman: bool = False  # False = real ATCC raman; True = synthetic via ramanspy
     # Temporal parameters
     bleaching_times: Optional[List[float]] = None
     bleaching_interval: float = 0.1
@@ -117,7 +117,7 @@ class SyntheticBleachingDataset:
     def __init__(
             self,
             config: SyntheticConfig,
-            atcc_xr: xr.Dataset,
+            raman_xr: Optional[xr.Dataset] = None,
             fluorophore_xr: Optional[xr.Dataset] = None,
     ):
         """
@@ -125,13 +125,17 @@ class SyntheticBleachingDataset:
         ----------
         config : SyntheticConfig
             Dataset generation configuration
-        atcc_xr : xr.Dataset
-            xarray Dataset from atcc_dataset.to_xarray()
+        raman_xr : xr.Dataset, optional
+            Raman spectra dataset (real ATCC or synthetic from simulate_raman_data()).
+            Required when config.simulate_raman=True; ignored when False.
         fluorophore_xr : xr.Dataset, optional
             Real fluorophore emission spectra. If None, generates synthetic.
         """
+        if raman_xr is None:
+            raise ValueError("raman_xr must be provided — call load_data_sources() before constructing SyntheticBleachingDataset")
+
         self.config = config
-        self.atcc_xr = atcc_xr
+        self.raman_xr = raman_xr
         self.fluorophore_xr = fluorophore_xr
         self.rng = np.random.default_rng(config.seed)
 
@@ -143,34 +147,38 @@ class SyntheticBleachingDataset:
 
         print(f"Bleaching time points: {self.bleaching_times}")
 
-        latest_time = (
-            config.integration_times[-1] if config.integration_times else "10s"
-        )
-        self.raman_spectra = atcc_xr.sel(integration_time=latest_time)
-
-        # Determine which intensity variable to use
-        if "intensity_baseline_corrected" in self.raman_spectra:
-            self.intensity_var = "intensity_baseline_corrected"
-            print(f"\nUsing baseline-corrected Raman spectra")
-        else:
-            self.intensity_var = "intensity_raw"
-            print(f"\nUsing raw Raman spectra (no baseline correction found)")
-
-        print(f"Integration time: '{latest_time}'")
-        print(f"Available samples: {len(self.raman_spectra['sample'])}")
-
-        self.wavenumbers = self.raman_spectra["wavenumber"].values
-
-        # TODO Multi sample support
-        if self.wavenumbers.ndim == 1:
-            n_atcc_samples = len(self.raman_spectra["sample"])
-            self.wavenumbers = np.tile(self.wavenumbers, (n_atcc_samples, 1))
-            print(
-                f"Wavenumber axis: shared (expanded to shape {self.wavenumbers.shape})"
+        if config.simulate_raman:
+            latest_time = (
+                config.integration_times[-1] if config.integration_times else "10s"
             )
-        else:
+            self.raman_spectra = raman_xr.sel(integration_time=latest_time)
+
+            if "intensity_baseline_corrected" in self.raman_spectra:
+                self.intensity_var = "intensity_baseline_corrected"
+                print(f"\nUsing baseline-corrected Raman spectra")
+            else:
+                self.intensity_var = "intensity_raw"
+                print(f"\nUsing raw Raman spectra (no baseline correction found)")
+
+            print(f"Integration time: '{latest_time}'")
+            print(f"Available samples: {len(self.raman_spectra['sample'])}")
+
             self.wavenumbers = self.raman_spectra["wavenumber"].values
-            print(f"Wavenumber axis: per-sample (shape {self.wavenumbers.shape})")
+            if self.wavenumbers.ndim == 1:
+                n_atcc_samples = len(self.raman_spectra["sample"])
+                self.wavenumbers = np.tile(self.wavenumbers, (n_atcc_samples, 1))
+                print(f"Wavenumber axis: shared (expanded to shape {self.wavenumbers.shape})")
+            else:
+                print(f"Wavenumber axis: per-sample (shape {self.wavenumbers.shape})")
+        else:
+            # No raman — derive wavenumber axis from fluorophore dataset
+            if fluorophore_xr is None:
+                raise ValueError("fluorophore_xr must be provided when simulate_raman=False")
+            self.raman_spectra = None
+            self.intensity_var = None
+            wn = np.asarray(fluorophore_xr["wavenumber"].values)
+            self.wavenumbers = wn[np.newaxis, :] if wn.ndim == 1 else wn
+            print(f"\nRaman simulation disabled — using fluorophore wavenumber axis: {self.wavenumbers.shape}")
 
         # for now pass single master axis as similar enough
         ref_wavenumbers = (
@@ -344,7 +352,8 @@ class SyntheticBleachingDataset:
         n_f = self.config.n_fluorophores
         fr_ratio = self.rng.uniform(self.config.fr_ratio_min, self.config.fr_ratio_max)
         raman_peak = raman_spectrum.max()
-        target_fluor_total = fr_ratio * raman_peak
+        # When raman is disabled (simulate_raman=False), peak is 0; use unit scale instead
+        target_fluor_total = fr_ratio * raman_peak if raman_peak > 0 else fr_ratio
 
         raw_weights = self.rng.uniform(
             self.config.fluorophore_weight_min,
@@ -378,6 +387,7 @@ class SyntheticBleachingDataset:
             # Scale controls SNR: higher scale = more detected photons = less relative noise
             # Physically: scale represents detector gain or integration time
             scaled = np.maximum(signal * self.config.poisson_noise_scale, 0)
+
             noisy_counts = self.rng.poisson(scaled)
             return noisy_counts / self.config.poisson_noise_scale
 
@@ -387,9 +397,10 @@ class SyntheticBleachingDataset:
             # matching the read noise in 'poisson_gaussian' mode.
             # Noise std is constant across all frames (unlike signal.std() which
             # would incorrectly decrease as fluorescence bleaches).
-            noise_std = 5.0 * self.config.gaussian_noise_scale
+            noise_std = self.config.gaussian_noise_scale
             noise = self.rng.normal(0, noise_std, signal.shape)
-            return np.maximum(signal + noise, 0)  # no negative counts
+            # return np.maximum(signal + noise, 0)  # no negative counts
+            return signal + noise # allow for negatives
 
         elif self.config.noise_type == "poisson_gaussian":
             #  detector noise model: shot noise + read noise
@@ -405,7 +416,8 @@ class SyntheticBleachingDataset:
             read_noise_std = read_noise_baseline * self.config.gaussian_noise_scale
             read_noise = self.rng.normal(0, read_noise_std, signal.shape)
 
-            return np.maximum(shot_noisy + read_noise, 0)  # No negative counts
+            # return np.maximum(shot_noisy + read_noise, 0)  # No negative counts
+            return shot_noisy + read_noise  # allow for negatives
 
         else:
             raise ValueError(f"Unknown noise type: {self.config.noise_type}")
@@ -498,7 +510,10 @@ class SyntheticBleachingDataset:
 
         for i in range(n_samples):
             atcc_idx = self.rng.integers(0, n_atcc_samples)
-            raman = self.raman_spectra[self.intensity_var].isel(sample=atcc_idx).values
+            if self.config.simulate_raman:
+                raman = self.raman_spectra[self.intensity_var].isel(sample=atcc_idx).values
+            else:
+                raman = np.zeros(self.wavenumbers.shape[-1], dtype=np.float32)
 
             if self.wavenumbers.ndim == 2:
                 wn = self.wavenumbers[atcc_idx]

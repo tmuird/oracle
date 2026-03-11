@@ -10,15 +10,14 @@ Modules:
 """
 
 from ramanlib.core import SpectralData
-from ramanlib.plot import compare_spectra
-from ramanlib.utils import wavenumber_positional_encoding, add_positional_encoding
-
 from ramanlib.loading import (
-    StrainDataset,
+    RamanDataset,
     SimpleDataset,
     load_data,
     load_simple_data,
 )
+from ramanlib.plot import compare_spectra
+from ramanlib.utils import wavenumber_positional_encoding, add_positional_encoding
 
 __all__ = [
     # Core
@@ -27,7 +26,7 @@ __all__ = [
     "wavenumber_positional_encoding",
     "add_positional_encoding",
     # Loading
-    "StrainDataset",
+    "RamanDataset",
     "SimpleDataset",
     "load_data",
     "load_simple_data",
