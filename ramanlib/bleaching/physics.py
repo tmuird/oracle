@@ -290,11 +290,15 @@ def physical_to_effective_amplitude(
 
     ã = w · [1 - exp(-λ·T)] / λ
 
+    Accepts torch.Tensor inputs (np.exp handles them via __array__) and
+    returns a numpy array. Only used in the numpy dispatch path of
+    reconstruct_time_series_numpy.
+
     Parameters
     ----------
-    abundances : np.ndarray
+    abundances : torch.Tensor
         Physical abundances w
-    decay_rates : np.ndarray
+    decay_rates : torch.Tensor
         Decay rates λ (s⁻¹)
     frame_duration : float
         CCD integration time per frame (seconds)
@@ -608,7 +612,6 @@ if TORCH_AVAILABLE:
 
         # Result: [B, T, F]
         # This gives the decay curve for every fluorophore in every batch sample
-        # print(f"Decay matrix : {lam}")
         decay_matrix = torch.exp(-lam * t)
 
         # decay_matrix = decay_matrix / (decay_matrix.mean(dim=1, keepdim=True) + 1e-8)
@@ -791,9 +794,13 @@ def reconstruct_time_series_numpy(
 
 ) -> np.ndarray:
     """
-    Wrapper to use the torch-based factored reconstruction from numpy code (visualization).
-    Handles conversion from physical abundances to effective amplitudes.
-    Output shape: [Time, Wavenumbers] (same as numpy version).
+    Dispatch to a torch-based physics model from numpy inputs.
+
+    Accepts numpy arrays, converts internally to torch, runs the selected
+    physics reconstruction, and returns a numpy array of shape [T, W].
+
+    For the 'factored' model, physical abundances are first converted to
+    effective amplitudes ã = w·(1 - exp(-λT))/λ before reconstruction.
     """
     # Convert to torch
     raman_t = torch.from_numpy(raman).float().unsqueeze(0)  # [1, W]
@@ -801,15 +808,6 @@ def reconstruct_time_series_numpy(
     abundances_t = torch.from_numpy(abundances).float().unsqueeze(0)  # [1, F]
     decay_rates_t = torch.from_numpy(decay_rates).float().unsqueeze(0)  # [1, F]
     time_values_t = torch.from_numpy(time_values).float()  # [T]
-
-    # # Call Factored Reconstruction -> [B, W, T]
-    # recon_t = reconstruct_time_series_factored_torch(
-    #     raman_t,
-    #     bases_t,
-    #     effective_amplitudes_t,
-    #     decay_rates_t,
-    #     time_values_t,
-    #     frame_duration)
 
     if physics_model == "integrated":
         x_recon = reconstruct_time_series_integrated_torch(

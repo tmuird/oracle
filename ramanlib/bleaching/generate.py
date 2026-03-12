@@ -1,8 +1,9 @@
 """
 Synthetic photobleaching dataset generation.
 
-Generates training data with known ground-truth for decomposition methods.
-Uses real ATCC Raman spectra with synthetic fluorescence decay.
+Generates training data with known ground truth for decomposition methods.
+Fluorescence decay is always synthetic; Raman can be real ATCC spectra
+(simulate_raman=False) or fully synthetic via ramanspy (simulate_raman=True).
 """
 
 from typing_extensions import Literal
@@ -26,7 +27,7 @@ class SyntheticConfig:
     n_samples: int = 5000
     physics_model: Literal["integrated", "factored", "pointsample"] = "pointsample"
     laser_nm: float = 532.0
-    simulate_raman: bool = False  # False = real ATCC raman; True = synthetic via ramanspy
+    simulate_raman: bool = False  # controls data source in train.py: False = real ATCC, True = synthetic via ramanspy
     # Temporal parameters
     bleaching_times: Optional[List[float]] = None
     bleaching_interval: float = 0.1
@@ -110,8 +111,10 @@ class SyntheticBleachingDataset:
     """
     Generate synthetic photobleaching time series with known ground truth.
 
-    Uses real ATCC Raman spectra (with per-sample wavenumber axes) and adds
-    synthetic fluorescence decay.
+    Fluorescence decay is always synthetic. The Raman background is either
+    real ATCC spectra (simulate_raman=False in config) or synthetic spectra
+    generated via ramanspy (simulate_raman=True). Fluorophore bases can be
+    shared across all samples or drawn per-sample.
     """
 
     def __init__(
@@ -126,8 +129,9 @@ class SyntheticBleachingDataset:
         config : SyntheticConfig
             Dataset generation configuration
         raman_xr : xr.Dataset, optional
-            Raman spectra dataset (real ATCC or synthetic from simulate_raman_data()).
-            Required when config.simulate_raman=True; ignored when False.
+            Raman spectra dataset — real ATCC (simulate_raman=False) or
+            synthetic from ramanspy (simulate_raman=True). Always required.
+            Provides both the wavenumber axis and the per-sample raman signal.
         fluorophore_xr : xr.Dataset, optional
             Real fluorophore emission spectra. If None, generates synthetic.
         """
@@ -147,38 +151,34 @@ class SyntheticBleachingDataset:
 
         print(f"Bleaching time points: {self.bleaching_times}")
 
-        if config.simulate_raman:
-            latest_time = (
-                config.integration_times[-1] if config.integration_times else "10s"
-            )
+        # Both simulate_raman=True (ramanspy) and simulate_raman=False (real ATCC)
+        # use raman_xr as the source — the flag only controls which dataset was loaded
+        # in train.py. The wavenumber axis and raman spectra always come from raman_xr.
+        # ATCC data has an integration_time dimension; select the longest exposure.
+        # Synthetic data from ramanspy may not, in which case use it directly.
+        if "integration_time" in raman_xr.dims or "integration_time" in raman_xr.coords:
+            latest_time = config.integration_times[-1] if config.integration_times else "10s"
             self.raman_spectra = raman_xr.sel(integration_time=latest_time)
-
-            if "intensity_baseline_corrected" in self.raman_spectra:
-                self.intensity_var = "intensity_baseline_corrected"
-                print(f"\nUsing baseline-corrected Raman spectra")
-            else:
-                self.intensity_var = "intensity_raw"
-                print(f"\nUsing raw Raman spectra (no baseline correction found)")
-
             print(f"Integration time: '{latest_time}'")
-            print(f"Available samples: {len(self.raman_spectra['sample'])}")
-
-            self.wavenumbers = self.raman_spectra["wavenumber"].values
-            if self.wavenumbers.ndim == 1:
-                n_atcc_samples = len(self.raman_spectra["sample"])
-                self.wavenumbers = np.tile(self.wavenumbers, (n_atcc_samples, 1))
-                print(f"Wavenumber axis: shared (expanded to shape {self.wavenumbers.shape})")
-            else:
-                print(f"Wavenumber axis: per-sample (shape {self.wavenumbers.shape})")
         else:
-            # No raman — derive wavenumber axis from fluorophore dataset
-            if fluorophore_xr is None:
-                raise ValueError("fluorophore_xr must be provided when simulate_raman=False")
-            self.raman_spectra = None
-            self.intensity_var = None
-            wn = np.asarray(fluorophore_xr["wavenumber"].values)
-            self.wavenumbers = wn[np.newaxis, :] if wn.ndim == 1 else wn
-            print(f"\nRaman simulation disabled — using fluorophore wavenumber axis: {self.wavenumbers.shape}")
+            self.raman_spectra = raman_xr
+
+        if "intensity_baseline_corrected" in self.raman_spectra:
+            self.intensity_var = "intensity_baseline_corrected"
+            print(f"Using baseline-corrected Raman spectra")
+        else:
+            self.intensity_var = "intensity_raw"
+            print(f"Using raw Raman spectra (no baseline correction found)")
+
+        print(f"Available samples: {len(self.raman_spectra['sample'])}")
+
+        self.wavenumbers = self.raman_spectra["wavenumber"].values
+        if self.wavenumbers.ndim == 1:
+            n_raman_samples = len(self.raman_spectra["sample"])
+            self.wavenumbers = np.tile(self.wavenumbers, (n_raman_samples, 1))
+            print(f"Wavenumber axis: shared (expanded to shape {self.wavenumbers.shape})")
+        else:
+            print(f"Wavenumber axis: per-sample (shape {self.wavenumbers.shape})")
 
         # for now pass single master axis as similar enough
         ref_wavenumbers = (
@@ -510,10 +510,7 @@ class SyntheticBleachingDataset:
 
         for i in range(n_samples):
             atcc_idx = self.rng.integers(0, n_atcc_samples)
-            if self.config.simulate_raman:
-                raman = self.raman_spectra[self.intensity_var].isel(sample=atcc_idx).values
-            else:
-                raman = np.zeros(self.wavenumbers.shape[-1], dtype=np.float32)
+            raman = self.raman_spectra[self.intensity_var].isel(sample=atcc_idx).values
 
             if self.wavenumbers.ndim == 2:
                 wn = self.wavenumbers[atcc_idx]
