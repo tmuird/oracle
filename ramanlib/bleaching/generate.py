@@ -412,8 +412,7 @@ class SyntheticBleachingDataset:
 
             # 2. Read noise (Gaussian) - constant, detector property
             # Typical CCD: ~5 counts RMS. Scale this by gaussian_noise_scale     
-            read_noise_baseline = 5.0  # counts RMS
-            read_noise_std = read_noise_baseline * self.config.gaussian_noise_scale
+            read_noise_std = self.config.gaussian_noise_scale
             read_noise = self.rng.normal(0, read_noise_std, signal.shape)
 
             # return np.maximum(shot_noisy + read_noise, 0)  # No negative counts

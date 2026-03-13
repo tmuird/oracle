@@ -328,8 +328,8 @@ def visualise_decomposition(
 
     # Plot 5: Reconstruction quality (first frame)
     ax = axes[1, 1]
-    ax.plot(wavenumbers, Y[0], "b-", alpha=0.7, label="Original (t=0)")
-    ax.plot(wavenumbers, reconstruction[0], "r--", alpha=0.7, label="Reconstructed")
+    ax.plot(wavenumbers, Y[0], "r--", alpha=0.7, label="Original (t=0)")
+    ax.plot(wavenumbers, reconstruction[0], "b-", alpha=0.7, label="Reconstructed")
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity")
     ax.set_title("Reconstruction (First Frame)")

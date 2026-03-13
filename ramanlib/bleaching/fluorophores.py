@@ -285,7 +285,7 @@ def load_fluorophores(
         if n_synthetic is None:
             raise ValueError("Either csv_path or n_synthetic must be specified")
 
-        df = generate_synthetic_fluorophores(
+        df = generate_synthetic_fluorophores( # TODO: Use correct axis for synthetic spectra
             n_fluorophores=n_synthetic * 4,
             laser_nm=laser_nm,
             min_excitation_efficiency=0.05,
