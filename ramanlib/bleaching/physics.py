@@ -85,7 +85,7 @@ def build_vandermonde(wn_norm: np.ndarray, degree: int) -> np.ndarray:
     return np.stack([wn_norm ** k for k in range(n_coeffs)], axis=1)
 
 
-# L2 Normalization
+# Normalization
 
 
 def l2_normalize(
@@ -96,6 +96,21 @@ def l2_normalize(
     """L2-normalize spectra along specified axis."""
     norm = np.linalg.norm(spectra, axis=axis, keepdims=True)
     return spectra / (norm + eps)
+
+
+def linf_normalize(
+        spectra: np.ndarray,
+        axis: int = -1,
+        eps: float = 1e-8,
+) -> np.ndarray:
+    """L-inf normalise spectra so each spectrum peaks at 1.0.
+
+    Preferred over L2 for dictionary bases: abundances then directly represent
+    the peak signal contribution of each fluorophore at t=0, and the required
+    parameter magnitude is O(signal) rather than O(signal / peak_basis_value).
+    """
+    peak = spectra.max(axis=axis, keepdims=True)
+    return spectra / (peak + eps)
 
 
 # Forward Model

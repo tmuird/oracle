@@ -15,6 +15,7 @@ from skimage.metrics import peak_signal_noise_ratio
 
 from ramanlib.bleaching.physics import (
     l2_normalize,
+    linf_normalize,
     interpolate_bases,
     reconstruct_time_series_numpy
 )
@@ -218,7 +219,7 @@ class SyntheticBleachingDataset:
                 bases[i] += amplitude * np.exp(-0.5 * ((wn - center) / width) ** 2)
             bases[i] = np.maximum(bases[i], 1e-6)
 
-        return l2_normalize(bases, axis=1)
+        return linf_normalize(bases, axis=1)
 
     def _sample_real_fluorophores(self, target_wavenumbers: np.ndarray) -> np.ndarray:
         """Sample real fluorophore spectra from fluorophore_xr dataset."""
@@ -297,7 +298,7 @@ class SyntheticBleachingDataset:
         #     spectrum = np.maximum(spectrum, 0)
         #     bases[i] = spectrum
 
-        return l2_normalize(bases_processed, axis=1)
+        return linf_normalize(bases_processed, axis=1)
 
     def _generate_decay_rates(self) -> np.ndarray:
         """Sample decay rates according to configured strategy."""
