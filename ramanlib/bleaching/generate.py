@@ -158,7 +158,7 @@ class SyntheticBleachingDataset:
         # ATCC data has an integration_time dimension; select the longest exposure.
         # Synthetic data from ramanspy may not, in which case use it directly.
         if "integration_time" in raman_xr.dims or "integration_time" in raman_xr.coords:
-            latest_time = config.integration_times[-1] if config.integration_times else "10s"
+            latest_time = config.integration_times[-1] if config.integration_times else "15s"
             self.raman_spectra = raman_xr.sel(integration_time=latest_time)
             print(f"Integration time: '{latest_time}'")
         else:
