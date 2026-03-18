@@ -1247,3 +1247,178 @@ def visualize_decomposition_3d(
     )
 
     return fig
+
+
+def plot_uncertainty(
+        ensemble: dict,
+        wavenumbers: Optional[np.ndarray] = None,
+        time_values: Optional[np.ndarray] = None,
+        reference_raman: Optional[np.ndarray] = None,
+        reference_bases: Optional[np.ndarray] = None,
+        reference_abundances: Optional[np.ndarray] = None,
+        sample_id: Optional[str] = None,
+        ci: float = 0.95,
+):
+    """
+    Visualise uncertainty across N stochastic VAE forward passes as heatmaps.
+
+    Args:
+        ensemble:             Output of predict_ensemble() — dict with keys
+                              'raman' [N,W], 'rates' [N,F], 'abundances' [N,F],
+                              'bases' [N,F,W], 'abundance_times_basis' [N,F,W],
+                              'reconstruction' [N,T,W].
+        wavenumbers:          Wavenumber axis [W].
+        time_values:          Time axis [T].
+        reference_raman:      GT Raman spectrum [W] for comparison.
+        reference_bases:      GT fluorophore basis spectra [n_gt, W].
+        reference_abundances: GT abundances [n_gt] for scaling GT bases.
+        sample_id:            Label for suptitle.
+        ci:                   Credible interval width (default 0.95 → 2.5/97.5 percentiles).
+
+    Returns:
+        (fig_ens, fig_comps):
+            fig_ens   — Raman ensemble heatmap [N×W] + mean/GT line + recon std [W×T]
+            fig_comps — Per-component abundance×basis heatmap [N×W] with GT overlay
+    """
+    lo_p = 100 * (1 - ci) / 2
+    hi_p = 100 - lo_p
+
+    raman_ens   = ensemble["raman"]                  # [N, W]
+    recon_ens   = ensemble["reconstruction"]         # [N, T, W]
+    ab_basis    = ensemble.get("abundance_times_basis")  # [N, F, W] or None
+
+    N = raman_ens.shape[0]
+    W = raman_ens.shape[1]
+    T = recon_ens.shape[1]
+    F = ab_basis.shape[1] if ab_basis is not None else 0
+
+    if wavenumbers is None:
+        wavenumbers = np.arange(W)
+    if time_values is None:
+        time_values = np.arange(T)
+
+    r_mean = raman_ens.mean(axis=0)
+
+    title_base = f"N={N}   {int(ci*100)}% CI"
+    if sample_id is not None:
+        title_base = f"Sample: {sample_id}   |   {title_base}"
+
+    def _density_heatmap(ax, fig, ens, wavenumbers, reference=None, ylabel="counts/sec", title=""):
+        """2D density heatmap: x=wavenumber, y=intensity, colour=sample count."""
+        n_bins = max(50, N)
+        # Include GT in y-range so it's never clipped
+        all_vals = [ens.min(), ens.max()]
+        if reference is not None:
+            all_vals += [reference.min(), reference.max()]
+        i_min, i_max = min(all_vals), max(all_vals)
+        i_pad = (i_max - i_min) * 0.05
+        i_edges = np.linspace(i_min - i_pad, i_max + i_pad, n_bins + 1)
+        density = np.zeros((n_bins, len(wavenumbers)), dtype=np.float32)
+        for w in range(len(wavenumbers)):
+            density[:, w], _ = np.histogram(ens[:, w], bins=i_edges)
+        im = ax.imshow(
+            density,
+            aspect="auto",
+            origin="lower",
+            extent=[wavenumbers[0], wavenumbers[-1], i_edges[0], i_edges[-1]],
+            cmap="hot",
+            interpolation="bilinear",
+        )
+        fig.colorbar(im, ax=ax, label="sample count", pad=0.02)
+        mean_line = ens.mean(axis=0)
+        ax.plot(wavenumbers, mean_line, color="cyan", linewidth=1.5, label="Mean")
+        if reference is not None:
+            ax.plot(wavenumbers, reference, color="lime", linewidth=1.5,
+                    linestyle="--", label="GT")
+        ax.set_xlabel("Wavenumber (cm⁻¹)")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.legend(fontsize=7, loc="upper right")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # fig_ens: Raman density heatmap + recon std heatmap
+    # ─────────────────────────────────────────────────────────────────────────
+    fig_ens, (ax_rdens, ax_rstd) = plt.subplots(1, 2, figsize=(14, 5))
+
+    _density_heatmap(
+        ax_rdens, fig_ens, raman_ens, wavenumbers,
+        reference=reference_raman,
+        ylabel="counts/sec",
+        title=f"Raman Intensity Distribution ({N} samples)",
+    )
+
+    recon_std = recon_ens.std(axis=0)  # [T, W]
+    im_std = ax_rstd.imshow(
+        recon_std.T,  # [W, T]
+        aspect="auto",
+        origin="lower",
+        extent=[time_values[0], time_values[-1], wavenumbers[0], wavenumbers[-1]],
+        cmap="hot",
+        interpolation="nearest",
+    )
+    fig_ens.colorbar(im_std, ax=ax_rstd, label="Std (counts/frame)", pad=0.02)
+    ax_rstd.set_xlabel("Time (s)")
+    ax_rstd.set_ylabel("Wavenumber (cm⁻¹)")
+    ax_rstd.set_title(f"Reconstruction Std ({N} samples)")
+
+    fig_ens.suptitle(title_base, fontsize=10)
+    fig_ens.tight_layout()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # fig_comps: Per-component abundance×basis density heatmap
+    # ─────────────────────────────────────────────────────────────────────────
+    if ab_basis is None or F == 0:
+        fig_comps = plt.figure(figsize=(6, 3))
+        fig_comps.text(0.5, 0.5, "No abundance×basis data", ha="center", va="center")
+        return fig_ens, fig_comps
+
+    ncols = min(F, 3)
+    nrows = -(-F // ncols)  # ceil division
+
+    fig_comps, axes_c = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows),
+                                     squeeze=False)
+
+    # Greedy basis-correlation matching: mean predicted basis vs GT bases
+    pred_to_gt: dict = {}
+    if reference_bases is not None and reference_abundances is not None:
+        mean_bases = ab_basis.mean(axis=0)  # [F, W]
+        n_gt = len(reference_bases)
+        corr_mat = np.zeros((F, n_gt))
+        for i in range(F):
+            for j in range(n_gt):
+                c = np.corrcoef(mean_bases[i], reference_bases[j])[0, 1]
+                corr_mat[i, j] = c if np.isfinite(c) else 0.0
+        used: set = set()
+        for p in np.argsort(-corr_mat.max(axis=1)):
+            avail = [(j, corr_mat[p, j]) for j in range(n_gt) if j not in used]
+            if avail:
+                best_j, _ = max(avail, key=lambda x: x[1])
+                pred_to_gt[p] = best_j
+                used.add(best_j)
+
+    for f in range(F):
+        row, col = divmod(f, ncols)
+        ax = axes_c[row, col]
+
+        comp_ens = ab_basis[:, f, :]  # [N, W]
+        gt_comp = None
+        gt_j = pred_to_gt.get(f)
+        if gt_j is not None:
+            gt_comp = reference_bases[gt_j] * reference_abundances[gt_j]
+
+        _density_heatmap(
+            ax, fig_comps, comp_ens, wavenumbers,
+            reference=gt_comp,
+            ylabel="counts",
+            title=f"Component {f + 1}" + (f"  →  GT {gt_j + 1}" if gt_j is not None else ""),
+        )
+
+    # Hide unused subplots
+    for f in range(F, nrows * ncols):
+        row, col = divmod(f, ncols)
+        axes_c[row, col].set_visible(False)
+
+    fig_comps.suptitle(f"Abundance × Basis Components   |   {title_base}", fontsize=10)
+    fig_comps.tight_layout()
+
+    return fig_ens, fig_comps

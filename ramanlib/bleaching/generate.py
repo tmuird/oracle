@@ -223,7 +223,7 @@ class SyntheticBleachingDataset:
 
     def _sample_real_fluorophores(self, target_wavenumbers: np.ndarray) -> np.ndarray:
         """Sample real fluorophore spectra from fluorophore_xr dataset."""
-        print("Sampling real fluorophore spectra...")
+        # print("Sampling real fluorophore spectra...")
         assert self.fluorophore_xr is not None
 
         n_f = self.config.n_fluorophores
@@ -507,7 +507,8 @@ class SyntheticBleachingDataset:
             bases_storage_temp: List[np.ndarray] = []
 
         print(f"\nGenerating {n_samples} synthetic samples...")
-
+        if self.fluorophore_xr is not None:
+            print("Sampling real fluorophore spectra...")
         for i in range(n_samples):
             atcc_idx = self.rng.integers(0, n_atcc_samples)
             raman = self.raman_spectra[self.intensity_var].isel(sample=atcc_idx).values
