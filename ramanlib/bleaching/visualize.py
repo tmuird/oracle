@@ -87,7 +87,6 @@ from ramanlib.bleaching.decompose import DecompositionResult
 def visualise_decomposition(
         data: SpectralData,
         decomposition: DecompositionResult,
-        physics_model: str = "factored",
         reference_raman: Optional[np.ndarray] = None,
         reference_bases: Optional[np.ndarray] = None,
         reference_rates: Optional[np.ndarray] = None,
@@ -95,6 +94,7 @@ def visualise_decomposition(
         normalise: bool = False,
         figsize: Tuple[int, int] = (20, 10),
         n_train: Optional[int] = None,
+        sample_id: Optional[str] = None,
 ):
     """
     Visualize spectral decomposition results.
@@ -102,21 +102,20 @@ def visualise_decomposition(
     Args:
         data: Original time series as SpectralData (must have time_values set).
         decomposition: DecompositionResult from predict_from_early.
-        physics_model: Physics model string ('factored', 'pointsample', 'integrated').
-        reference_raman: GT Raman spectrum in counts/frame for comparison. If None,
-            uses the last 20 frames average of the data.
+            physics_model and frame_duration are read from decomposition automatically.
+        reference_raman: GT Raman spectrum for comparison. If None, uses last 20 frames avg.
         reference_bases: GT fluorophore basis spectra [n_gt, n_wavenumbers].
         reference_rates: GT decay rates [n_gt] in s⁻¹.
         reference_abundances: GT physical abundances [n_gt].
         normalise: If True, L-inf normalise spectra in the bases plot for visual comparison.
-        figsize: Figure size. Automatically widened when reference bases are provided.
-        n_train: Number of training frames. If provided, adds a dotted vertical line at
-            the training cutoff in the decay and MSE plots, and shades the extrapolation
-            region.
+        figsize: Figure size.
+        n_train: Number of training frames — adds a cutoff line and shades regions.
+        sample_id: Optional label shown in the suptitle.
 
     Returns:
         Tuple of (figure, axes)
     """
+    physics_model = getattr(decomposition, "physics_model", "pointsample")
     has_reference = (
         reference_bases is not None
         and reference_rates is not None
@@ -147,9 +146,9 @@ def visualise_decomposition(
 
     reconstruction = decomposition.reconstruction(time_values)
 
-    # Training cutoff time for vertical line
-    if n_train is not None and time_values is not None and n_train < len(time_values):
-        t_train_cutoff = float(time_values[n_train])
+    # Training cutoff time for vertical line — placed at the last *used* frame.
+    if n_train is not None and time_values is not None and len(time_values) > 0:
+        t_train_cutoff = float(time_values[min(n_train - 1, len(time_values) - 1)])
     else:
         t_train_cutoff = None
 
@@ -198,37 +197,43 @@ def visualise_decomposition(
         pred_colors = [_COLORS[i % len(_COLORS)] for i in range(n_fluorophores)]
         corr_matrix = None
 
-    # ── Layout: 2×4 with reference (adds heatmap + rate scatter), else 2×3 ──
-    ncols = 4 if has_reference else 3
-    fig_w = figsize[0] + (5 if has_reference else 0)
-    fig, axes = plt.subplots(2, ncols, figsize=(fig_w, figsize[1]))
+    # ── Layout: always 2×3 ───────────────────────────────────────────────────
+    fig, axes = plt.subplots(2, 3, figsize=figsize)
 
     def _add_train_cutoff(ax, orientation="v"):
-        """Dotted grey line at training cutoff."""
+        """Solid dark line marking the last training frame."""
         if t_train_cutoff is None:
             return
         if orientation == "v":
-            ax.axvline(t_train_cutoff, color="grey", linestyle=":", linewidth=1.5,
+            ax.axvline(t_train_cutoff, color="#444444", linestyle="--", linewidth=1.8,
                        label=f"Train cutoff (n={n_train})", zorder=5)
         else:
-            ax.axhline(t_train_cutoff, color="grey", linestyle=":", linewidth=1.5, zorder=5)
+            ax.axhline(t_train_cutoff, color="#444444", linestyle="--", linewidth=1.8, zorder=5)
 
-    # ── Plot 1: Original Time Series ─────────────────────────────────────────
+    # ── Plot 1: Original Time Series + Reconstruction overlay ─────────────────
     ax = axes[0, 0]
-    n_show = min(8, n_t)
+    n_show = min(6, n_t)
     cmap_ts = plt.cm.viridis
-    for i, idx in enumerate(np.linspace(0, n_t - 1, n_show, dtype=int)):
-        ax.plot(wavenumbers, Y[idx], color=cmap_ts(i / n_show), alpha=0.7)
-    title_suffix = f"  (training: first {n_train} frames)" if n_train else ""
+    show_indices = np.linspace(0, n_t - 1, n_show, dtype=int)
+    for i, idx in enumerate(show_indices):
+        c = cmap_ts(i / max(n_show - 1, 1))
+        t_label = f"t={time_values[idx]:.2f}s" if time_values is not None else f"frame {idx}"
+        ax.plot(wavenumbers, Y[idx], color=c, alpha=0.8, linewidth=1.2, label=t_label)
+        ax.plot(wavenumbers, reconstruction[idx], color=c, alpha=0.5,
+                linewidth=1.0, linestyle="--")
+    # Dummy lines for legend
+    ax.plot([], [], "k-",  linewidth=1.5, label="Observed")
+    ax.plot([], [], "k--", linewidth=1.0, alpha=0.6, label="Reconstructed")
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity (counts/frame)")
-    ax.set_title(f"Original Time Series{title_suffix}")
+    ax.set_title(f"Time Series Summary")
+    ax.legend(fontsize=7, ncol=2)
     ax.grid(True, alpha=0.3)
 
     # ── Plot 2: Extracted Raman vs reference ─────────────────────────────────
     ax = axes[0, 1]
     ax.plot(wavenumbers, raman_per_frame, color=_COLORS[0], linewidth=2,
-            label="Predicted Raman (×T)")
+            label="Predicted Raman")
     ax.plot(wavenumbers, reference_raman, "r--", linewidth=1.5, alpha=0.8,
             label=ref_raman_label)
     raman_corr = np.corrcoef(raman_per_frame, reference_raman)[0, 1]
@@ -307,7 +312,7 @@ def visualise_decomposition(
             ax.plot(time_values, amplitude,
                     color=ref_colors[j], linestyle="--", linewidth=1.5, alpha=0.8,
                     label=f"GT τ={1.0 / reference_rates[j]:.3f}s, w={reference_abundances[j]:.1f}")
-        ax.plot(time_values, total_gt_fluor, "r--", linewidth=2, label="Total GT")
+        ax.plot(time_values, total_gt_fluor, "r--", linewidth=2, label="Total GT fluor.")
     ax.plot(time_values, total_fluor, "k-", linewidth=2, label="Total Predicted")
     _add_train_cutoff(ax)
     if t_train_cutoff is not None:
@@ -320,6 +325,7 @@ def visualise_decomposition(
     ax.grid(True, alpha=0.3)
 
     # ── Plot 5: First Frame Reconstruction ───────────────────────────────────
+    # ── Plot 5: First Frame Reconstruction ───────────────────────────────────
     ax = axes[1, 1]
     ax.plot(wavenumbers, Y[0], "r--", linewidth=1.5, alpha=0.8, label="Original (t=0)")
     ax.plot(wavenumbers, reconstruction[0], color=_COLORS[0], linewidth=1.5, alpha=0.9,
@@ -331,20 +337,14 @@ def visualise_decomposition(
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    # ── Plot 6: MSE over time ─────────────────────────────────────────────────
+    # ── Plot 6: MSE over time (log scale) ────────────────────────────────────
     ax = axes[1, 2]
     residuals = Y - reconstruction
     mse_over_time = np.mean(residuals ** 2, axis=1)
     mse_all = float(mse_over_time.mean())
     n_first = n_train if n_train else 20
     mse_first = float(mse_over_time[:n_first].mean())
-    ax.plot(time_values, mse_over_time, "k-", linewidth=1.5, label="MSE per frame")
-    ax.fill_between(
-        time_values,
-        np.clip(mse_over_time - np.std(residuals ** 2, axis=1), 0, None),
-        mse_over_time + np.std(residuals ** 2, axis=1),
-        alpha=0.2, color="grey",
-    )
+    ax.semilogy(time_values, mse_over_time, "k-", linewidth=1.5, label="MSE per frame")
     _add_train_cutoff(ax)
     if t_train_cutoff is not None:
         ax.axvspan(time_values[0], t_train_cutoff, alpha=0.06, color="steelblue",
@@ -352,55 +352,22 @@ def visualise_decomposition(
         ax.axvspan(t_train_cutoff, time_values[-1], alpha=0.06, color="darkorange",
                    label="Extrapolation region")
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("MSE (counts²/frame²)")
+    ax.set_ylabel("MSE (log scale)")
     ax.set_title("MSE Over Time")
     ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
+    ax.grid(True, alpha=0.3, which="both")
 
-    # ── Plot 7: Basis Correlation Heatmap (reference only) ───────────────────
-    if has_reference:
-        ax = axes[0, 3]
-        im = ax.imshow(corr_matrix, vmin=-1, vmax=1, cmap="RdBu", aspect="auto")
-        ax.set_xticks(range(n_ref))
-        ax.set_yticks(range(n_fluorophores))
-        ax.set_xticklabels([f"GT B{j+1}" for j in range(n_ref)], rotation=45, ha="right",
-                           fontsize=8)
-        ax.set_yticklabels([f"Pred B{i+1}" for i in range(n_fluorophores)], fontsize=8)
-        for i in range(n_fluorophores):
-            for j in range(n_ref):
-                text_color = "white" if abs(corr_matrix[i, j]) > 0.6 else "black"
-                ax.text(j, i, f"{corr_matrix[i, j]:.2f}", ha="center", va="center",
-                        fontsize=8, color=text_color)
-        plt.colorbar(im, ax=ax, shrink=0.8, label="Pearson r")
-        ax.set_title("Basis Correlation\n(Pred vs GT Dictionary)")
-        ax.set_xlabel("GT / Dictionary Bases")
-        ax.set_ylabel("Predicted Bases")
-
-        # ── Plot 8: Decay Rate Comparison ────────────────────────────────────
-        ax = axes[1, 3]
-        pred_r_matched, gt_r_matched, pair_cols = [], [], []
-        for p in range(n_fluorophores):
-            ref_j, corr_val = pred_to_ref[p]
-            if ref_j is not None:
-                pred_r_matched.append(rates[p])
-                gt_r_matched.append(reference_rates[ref_j])
-                pair_cols.append(pred_colors[p])
-        if pred_r_matched:
-            for pred_r, gt_r, c in zip(pred_r_matched, gt_r_matched, pair_cols):
-                ax.scatter(gt_r, pred_r, color=c, s=80, zorder=5)
-            all_r = np.concatenate([pred_r_matched, gt_r_matched])
-            lo, hi = 0.0, float(max(all_r)) * 1.15
-            ax.plot([lo, hi], [lo, hi], "k--", linewidth=1, alpha=0.5, label="1:1")
-            ax.set_xlim(lo, hi)
-            ax.set_ylim(lo, hi)
-        ax.set_xlabel("GT λ (s⁻¹)")
-        ax.set_ylabel("Predicted λ (s⁻¹)")
-        ax.set_title("Decay Rate Comparison\n(matched by basis correlation)")
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
+    # ── Suptitle with sample/model info ───────────────────────────────────────
+    parts = []
+    if sample_id is not None:
+        parts.append(f"Sample: {sample_id}")
+    parts.append(f"n_bases={n_fluorophores}")
+    parts.append(f"physics={physics_model}")
+    if n_train is not None:
+        parts.append(f"n_train={n_train}")
+    fig.suptitle("   |   ".join(parts), fontsize=9, y=1.01)
 
     plt.tight_layout()
-    plt.show()
 
     # ── Printed summary ───────────────────────────────────────────────────────
     print(f"\nReconstruction MSE (all frames):        {mse_all:.4f}")
@@ -436,6 +403,178 @@ def visualise_decomposition(
         print(f"\nRate errors % (sorted, naive 1-to-1): {np.round(rate_errors_pct, 1)}")
 
     return fig, axes
+
+
+def plot_parameter_detail(
+        decomposition: DecompositionResult,
+        reference_bases: np.ndarray,
+        reference_rates: np.ndarray,
+        reference_abundances: np.ndarray,
+        n_train: Optional[int] = None,
+        sample_id: Optional[str] = None,
+):
+    """
+    Two detail figures (returned as a tuple):
+      fig_scatter — basis correlation heatmap + decay-rate scatter + abundance scatter (1×3)
+      fig_comps   — per-component spectra: abundance × basis at t=0 pred vs GT
+
+    Wavenumbers and metadata are read from decomposition automatically.
+
+    Usage::
+        fig_scatter, fig_comps = plot_parameter_detail(
+            decomposition, ref_bases, ref_rates, ref_abundances,
+            n_train=5, sample_id="7"
+        )
+    """
+    _COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    bases      = decomposition.fluorophore_spectra.intensities
+    abundances = decomposition.abundances
+    rates      = decomposition.rates
+    n_fluorophores = len(rates)
+    n_ref          = len(reference_rates)
+
+    # Wavenumbers: prefer fluorophore_spectra axis, fall back to raman axis
+    wavenumbers = decomposition.fluorophore_spectra.wavenumbers
+    if wavenumbers is None:
+        wavenumbers = decomposition.raman.wavenumbers
+    if wavenumbers is None:
+        wavenumbers = np.arange(bases.shape[1])
+
+    # ── Info string for suptitles ─────────────────────────────────────────────
+    physics_model = getattr(decomposition, "physics_model", "pointsample")
+    parts = []
+    if sample_id is not None:
+        parts.append(f"Sample: {sample_id}")
+    parts.append(f"n_bases={n_fluorophores}")
+    parts.append(f"n_gt={n_ref}")
+    parts.append(f"physics={physics_model}")
+    if n_train is not None:
+        parts.append(f"n_train={n_train}")
+    info_str = "   |   ".join(parts)
+
+    # ── Greedy matching by basis correlation ─────────────────────────────────
+    corr_matrix = np.zeros((n_fluorophores, n_ref))
+    for i in range(n_fluorophores):
+        for j in range(n_ref):
+            c = np.corrcoef(bases[i], reference_bases[j])[0, 1]
+            corr_matrix[i, j] = c if np.isfinite(c) else 0.0
+    pred_to_ref: Dict[int, Tuple] = {}
+    used_refs: set = set()
+    for p in np.argsort(-corr_matrix.max(axis=1)):
+        available = [(j, corr_matrix[p, j]) for j in range(n_ref) if j not in used_refs]
+        if available:
+            best_j, best_c = max(available, key=lambda x: x[1])
+            pred_to_ref[p] = (best_j, float(best_c))
+            used_refs.add(best_j)
+        else:
+            pred_to_ref[p] = (None, 0.0)
+
+    pred_colors = [
+        _COLORS[pred_to_ref[i][0] % len(_COLORS)] if pred_to_ref[i][0] is not None else "#888888"
+        for i in range(n_fluorophores)
+    ]
+    ref_colors = [_COLORS[j % len(_COLORS)] for j in range(n_ref)]
+
+    # ── Figure 1: Correlation heatmap + Rate scatter + Abundance scatter ─────
+    fig_scatter, (ax_corr, ax_r, ax_a) = plt.subplots(1, 3, figsize=(15, 5))
+
+    # Correlation heatmap
+    im = ax_corr.imshow(corr_matrix, vmin=-1, vmax=1, cmap="RdBu", aspect="auto")
+    ax_corr.set_xticks(range(n_ref))
+    ax_corr.set_yticks(range(n_fluorophores))
+    ax_corr.set_xticklabels([f"GT B{j+1}" for j in range(n_ref)], rotation=45, ha="right", fontsize=9)
+    ax_corr.set_yticklabels([f"Pred B{i+1}" for i in range(n_fluorophores)], fontsize=9)
+    for i in range(n_fluorophores):
+        for j in range(n_ref):
+            text_color = "white" if abs(corr_matrix[i, j]) > 0.6 else "black"
+            ax_corr.text(j, i, f"{corr_matrix[i, j]:.2f}", ha="center", va="center",
+                         fontsize=9, color=text_color)
+    plt.colorbar(im, ax=ax_corr, shrink=0.8, label="Pearson r")
+    ax_corr.set_title("Basis Correlation")
+    ax_corr.set_xlabel("GT Bases")
+    ax_corr.set_ylabel("Predicted Bases")
+
+    # Matched pairs for scatter plots
+    pred_r, gt_r, pred_a, gt_a, pair_cols, pair_labels = [], [], [], [], [], []
+    for p in range(n_fluorophores):
+        ref_j, _ = pred_to_ref[p]
+        if ref_j is not None:
+            pred_r.append(rates[p])
+            gt_r.append(reference_rates[ref_j])
+            pred_a.append(float(abundances[p]))
+            gt_a.append(float(reference_abundances[ref_j]))
+            pair_cols.append(pred_colors[p])
+            pair_labels.append(f"B{p+1}→GT{ref_j+1}")
+
+    for ax, xs, ys, xlabel, ylabel, title in [
+        (ax_r, gt_r, pred_r, "GT λ (s⁻¹)", "Predicted λ (s⁻¹)", "Decay Rate"),
+        (ax_a, gt_a, pred_a, "GT abundance w", "Predicted abundance w", "Abundance"),
+    ]:
+        if xs:
+            for x, y, c, lbl in zip(xs, ys, pair_cols, pair_labels):
+                ax.scatter(x, y, color=c, s=110, zorder=5, edgecolors="k", linewidths=0.5)
+                ax.annotate(lbl, (x, y), textcoords="offset points", xytext=(5, 4), fontsize=7)
+            lo = 0.0
+            hi = float(max(max(xs), max(ys))) * 1.2
+            ax.plot([lo, hi], [lo, hi], "k--", linewidth=1, alpha=0.5, label="1:1")
+            ax.set_xlim(lo, hi)
+            ax.set_ylim(lo, hi)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(f"{title} Comparison")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect("equal", adjustable="box")
+
+    if info_str:
+        fig_scatter.suptitle(info_str, fontsize=9, y=1.02)
+    fig_scatter.tight_layout()
+
+    # ── Figure 2: Per-component spectra (abundance × basis at t=0) ───────────
+    n_cols = min(n_fluorophores, 4)
+    n_rows = int(np.ceil(n_fluorophores / n_cols))
+    fig_comps, axes_c = plt.subplots(
+        n_rows, n_cols,
+        figsize=(5 * n_cols, 4 * n_rows),
+        squeeze=False,
+    )
+
+    for i in range(n_fluorophores):
+        row, col = divmod(i, n_cols)
+        ax = axes_c[row][col]
+        tau_pred = 1.0 / rates[i]
+        pred_comp = float(abundances[i]) * bases[i]
+        ax.plot(wavenumbers, pred_comp, color=pred_colors[i], linewidth=2,
+                label=f"Pred  τ={tau_pred:.3f}s  w={abundances[i]:.2f}")
+
+        ref_j, corr_val = pred_to_ref[i]
+        if ref_j is not None:
+            tau_gt  = 1.0 / reference_rates[ref_j]
+            gt_comp = float(reference_abundances[ref_j]) * reference_bases[ref_j]
+            ax.plot(wavenumbers, gt_comp, color=ref_colors[ref_j],
+                    linestyle="--", linewidth=1.5, alpha=0.85,
+                    label=f"GT    τ={tau_gt:.3f}s  w={reference_abundances[ref_j]:.2f}")
+            ax.set_title(f"Component {i + 1}  (r={corr_val:.3f})")
+        else:
+            ax.set_title(f"Component {i + 1}  (no GT match)")
+
+        ax.set_xlabel("Wavenumber (cm⁻¹)")
+        ax.set_ylabel("w · B(ν)  at t=0")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    for i in range(n_fluorophores, n_rows * n_cols):
+        row, col = divmod(i, n_cols)
+        axes_c[row][col].set_visible(False)
+
+    title_comps = "Individual Components: abundance × basis at t=0  (solid=pred, dashed=GT)"
+    if info_str:
+        title_comps += f"\n{info_str}"
+    fig_comps.suptitle(title_comps, fontsize=10)
+    fig_comps.tight_layout()
+
+    return fig_scatter, fig_comps
 
 
 try:
