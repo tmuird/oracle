@@ -832,6 +832,7 @@ def simulate_data(
     spectral_axis: Optional[List[float]] = None,
     realistic=False,
     seed: Optional[int] = None,
+    n_bands: Optional[int] = None,
 ) -> RamanDataset:
     """Simulate a dataset with random Raman spectra using ramanspy.
 
@@ -846,8 +847,8 @@ def simulate_data(
 
     if spectral_axis is None:
         spectral_axis = np.linspace(500, 1700, 1000)
-
-    n_bands = len(spectral_axis)
+    if n_bands is None:
+        n_bands = len(spectral_axis)
     dataset = RamanDataset()
 
     for i in range(n_samples):

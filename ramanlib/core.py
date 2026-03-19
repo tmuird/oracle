@@ -8,12 +8,10 @@ Includes:
 - Positional encoding: Wavenumber-based encoding for ML models
 """
 
-from typing import List, Optional, Tuple, Union, Dict
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
-from matplotlib.axes import Axes
 from dataclasses import dataclass
+from typing import List, Optional, Tuple, Union, Dict
+
+import numpy as np
 
 try:
     import ramanspy as rp
@@ -98,7 +96,7 @@ class SpectralData:
 
     intensities: np.ndarray
     wavenumbers: np.ndarray
-    label: Optional[str] = None
+    label: Optional[Union[str, List[str], np.ndarray]] = None
     time_values: Optional[np.ndarray] = None
 
     def get_spectrum(self, sample_idx: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -177,6 +175,7 @@ class SpectralData:
         >>> fluor = SpectralData(intensities, wn, label='Fluorophores')
         >>> first_5 = fluor[:5]  # First 5 fluorophores
         """
+
         # Handle integer, slice, or array indexing
         new_intensities = self.intensities[idx]
 
@@ -201,11 +200,20 @@ class SpectralData:
                 new_time_values = np.array([new_time_values])
             elif new_time_values.ndim == 0:
                 new_time_values = np.array([new_time_values.item()])
-
+        # Handle label slicing if it's a list/array
+        new_label = self.label
+        if isinstance(self.label, (list, np.ndarray)):
+            try:
+                new_label = np.array(self.label)[idx].tolist()
+                # If we sliced a single item, unpack it to a string
+                if isinstance(new_label, list) and len(new_label) == 1:
+                    new_label = new_label[0]
+            except Exception:
+                new_label = self.label  # Fallback
         return SpectralData(
             intensities=new_intensities,
             wavenumbers=new_wavenumbers,
-            label=self.label,
+            label=new_label,
             time_values=new_time_values,
         )
 
@@ -473,21 +481,29 @@ class SpectralData:
             time_values=self.time_values,
         )
 
+    def get_sample_label(self, sample_idx: int) -> str:
+        """Helper to safely get the specific label for a sample."""
+        if isinstance(self.label, (list, np.ndarray)) and len(self.label) > sample_idx:
+            return str(self.label[sample_idx])
+        elif self.label is not None:
+            return f"{self.label} - Sample {sample_idx}"
+        return f"Sample {sample_idx}"
+
 
 def convert_to_spectral_data(
-    data: Union[
-        SpectralData,
-        "rp.SpectralContainer",
-        "xr.DataArray",
-        "xr.Dataset",
-        np.ndarray,
-        Dict,
-        Tuple,
-    ],
-    wavenumbers: Optional[np.ndarray] = None,
-    intensity_var: str = "intensity_raw",
-    wavenumber_var: str = "wavenumber",
-    label: Optional[str] = None,
+        data: Union[
+            SpectralData,
+            "rp.SpectralContainer",
+            "xr.DataArray",
+            "xr.Dataset",
+            np.ndarray,
+            Dict,
+            Tuple,
+        ],
+        wavenumbers: Optional[np.ndarray] = None,
+        intensity_var: str = "intensity_raw",
+        wavenumber_var: str = "wavenumber",
+        label: Optional[str] = None,
 ) -> SpectralData:
     """
     Convert various input formats to unified SpectralData.
@@ -598,7 +614,6 @@ def convert_to_spectral_data(
         )
 
     raise TypeError(f"Unsupported input type: {type(data)}")
-
 
 # def compare_encoding_methods(
 #     wavenumbers: np.ndarray, d_model: int = 6, figsize: Tuple[int, int] = (14, 10)

@@ -180,8 +180,7 @@ def compare_spectra(
 
                 for dataset_idx, spec in enumerate(spectral_data):
                     wn, intensity = spec.get_spectrum(sample_idx)
-                    label = spec.label or f"Dataset {dataset_idx}"
-
+                    label = spec.get_sample_label(sample_idx)
                     ax.plot(wn, intensity, alpha=alphas[dataset_idx], label=label, color=colours[dataset_idx], linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
 
                 if legend:
@@ -203,11 +202,7 @@ def compare_spectra(
 
                 for sample_idx in range(n_samples):
                     wn, intensity = spec.get_spectrum(sample_idx)
-                    label = (
-                        f"{dataset_label} - Sample {sample_idx}"
-                        if n_samples > 1
-                        else dataset_label
-                    )
+                    label = spec.get_sample_label(sample_idx)
                     ax.plot(wn, intensity, label=label, alpha=alphas[dataset_idx], color=colours[dataset_idx], linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
 
                 if plot_mean:
