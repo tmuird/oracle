@@ -401,6 +401,7 @@ class SyntheticBleachingDataset:
             noise_std = self.config.gaussian_noise_scale
             noise = self.rng.normal(0, noise_std, signal.shape)
             # return np.maximum(signal + noise, 0)  # no negative counts
+
             return signal + noise # allow for negatives
 
         elif self.config.noise_type == "poisson_gaussian":
@@ -555,7 +556,9 @@ class SyntheticBleachingDataset:
         intensity_clean = np.array(intensity_clean, dtype=np.float32)
         raman_gt = np.array(raman_gt, dtype=np.float32)
         wavenumbers_all = np.array(wavenumbers_all, dtype=np.float32)
-
+        if self.config.noise_type == "gaussian":
+            noise_floor = self.config.gaussian_noise_scale / intensity_clean.std()
+            print(f"Noise floor is at {noise_floor}")
         ds = xr.Dataset(
             data_vars={
                 "intensity_raw": (
