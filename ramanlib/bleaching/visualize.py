@@ -212,9 +212,9 @@ def visualise_decomposition(
 
     # ── Plot 1: Original Time Series + Reconstruction overlay ─────────────────
     ax = axes[0, 0]
-    n_show = min(6, n_t)
+    n_show = n_train
     cmap_ts = plt.cm.viridis
-    show_indices = np.linspace(0, n_t - 1, n_show, dtype=int)
+    show_indices = np.linspace(0, n_train - 1, n_show, dtype=int)
     for i, idx in enumerate(show_indices):
         c = cmap_ts(i / max(n_show - 1, 1))
         t_label = f"t={time_values[idx]:.2f}s" if time_values is not None else f"frame {idx}"
@@ -765,7 +765,7 @@ def get_full_decomposition(
     reconstructed = reconstructed_frame[0]  # [1, W] -> [W]
 
     # Raman contribution per frame
-    raman_per_frame = raman * frame_duration
+    raman_per_frame = rama * 1000
 
     # Total fluorescence = reconstructed - raman_per_frame
     total_fluor = reconstructed - raman_per_frame
