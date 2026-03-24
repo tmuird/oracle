@@ -140,9 +140,9 @@ def visualise_decomposition(
     if frame_dur is None:
         frame_dur = 1.0
     print(f"Frame duration: {frame_dur:.3f} s")
-    # decomposition.raman.intensities is in counts/sec (rate), matching the units
-    # of data.intensities (Y) and the reference_raman (last-frames avg).
-    raman_per_frame = raman
+    # decomposition.raman.intensities is in counts/sec (rate).
+    # Multiply by frame_dur to convert to counts/frame, matching Y and reconstruction.
+    raman_per_frame = raman * frame_dur
 
     reconstruction = decomposition.reconstruction(time_values)
 
@@ -152,12 +152,14 @@ def visualise_decomposition(
     else:
         t_train_cutoff = None
 
-    # Reference Raman (expected in same units as Y, i.e. counts/frame)
+    # Reference Raman: if derived from Y it is already counts/frame; if provided
+    # externally (e.g. GT from generate.py) it is counts/sec → scale by frame_dur.
     if reference_raman is None:
-        reference_raman = Y[-20:].mean(axis=0)
+        ref_raman_per_frame = Y[-20:].mean(axis=0)  # counts/frame, no scaling needed
         ref_raman_label = "Reference (last 20 frames avg)"
         print("Using last 20 frames average as reference Raman.")
     else:
+        ref_raman_per_frame = reference_raman * frame_dur  # counts/sec → counts/frame
         ref_raman_label = "Ground Truth Raman"
 
     # ── Consistent colour palette ────────────────────────────────────────────
@@ -212,9 +214,9 @@ def visualise_decomposition(
 
     # ── Plot 1: Original Time Series + Reconstruction overlay ─────────────────
     ax = axes[0, 0]
-    n_show = n_train
+    n_show = min(5, n_train)
     cmap_ts = plt.cm.viridis
-    show_indices = np.linspace(0, n_train - 1, n_show, dtype=int)
+    show_indices = np.arange(n_show)
     for i, idx in enumerate(show_indices):
         c = cmap_ts(i / max(n_show - 1, 1))
         t_label = f"t={time_values[idx]:.2f}s" if time_values is not None else f"frame {idx}"
@@ -234,9 +236,9 @@ def visualise_decomposition(
     ax = axes[0, 1]
     ax.plot(wavenumbers, raman_per_frame, color=_COLORS[0], linewidth=2,
             label="Predicted Raman")
-    ax.plot(wavenumbers, reference_raman, "r--", linewidth=1.5, alpha=0.8,
+    ax.plot(wavenumbers, ref_raman_per_frame, "r--", linewidth=1.5, alpha=0.8,
             label=ref_raman_label)
-    raman_corr = np.corrcoef(raman_per_frame, reference_raman)[0, 1]
+    raman_corr = np.corrcoef(raman_per_frame, ref_raman_per_frame)[0, 1]
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity (counts/frame)")
     ax.set_title(f"Extracted Raman Spectrum  (r = {raman_corr:.4f})")
@@ -745,7 +747,7 @@ def get_full_decomposition(
         frame_duration = float(time_values[1] - time_values[0])
     else:
         frame_duration = 1.0
-
+    print(f"Using {frame_duration} frames")
     raman = ds["raman_gt"].isel(sample=sample_idx).values
     decay_rates = ds["decay_rates_gt"].isel(sample=sample_idx).values
     abundances = ds["abundances_gt"].isel(sample=sample_idx).values
@@ -765,7 +767,7 @@ def get_full_decomposition(
     reconstructed = reconstructed_frame[0]  # [1, W] -> [W]
 
     # Raman contribution per frame
-    raman_per_frame = rama * 1000
+    raman_per_frame = raman * frame_duration
 
     # Total fluorescence = reconstructed - raman_per_frame
     total_fluor = reconstructed - raman_per_frame
@@ -1422,3 +1424,129 @@ def plot_uncertainty(
     fig_comps.tight_layout()
 
     return fig_ens, fig_comps
+
+
+def plot_raman_posterior(
+        ensemble: dict,
+        wavenumbers: np.ndarray,
+        reference_raman: Optional[np.ndarray] = None,
+        frame_duration: float = 0.1,
+        percentiles: Tuple[float, float, float] = (5.0, 50.0, 95.0),
+        n_sigma: float = 1.0,
+        sample_alpha: float = 0.15,
+        figsize: Tuple[int, int] = (8, 5),
+        sample_id: Optional[str] = None,
+) -> Tuple[Figure, Figure, Figure]:
+    """
+    Three separate posterior figures for N ensemble Raman predictions.
+
+    All figures work in counts/frame (ensemble['raman'] * frame_duration).
+
+    Figure 1 — raw sample overlay:
+        All N samples at ``sample_alpha``, GT overlaid. No summary statistics.
+
+    Figure 2 — annotated overlay:
+        Same traces plus [p_lo, p_hi] percentile band and median line.
+
+    Figure 3 — credible tube:
+        Posterior mean ± n_sigma·std shaded tube, with median and GT overlaid.
+
+    Parameters
+    ----------
+    ensemble : dict
+        Output of ``predict_ensemble()``. Key ``'raman'`` has shape [N, W] in counts/sec.
+    wavenumbers : (W,)
+    reference_raman : (W,) in counts/sec (GT from generate.py), optional.
+        Scaled internally by ``frame_duration`` to counts/frame.
+    frame_duration : float
+        Converts counts/sec → counts/frame.
+    percentiles : (p_lo, p_mid, p_hi)
+        Quantile levels; p_mid is the median line. Default (5, 50, 95).
+    n_sigma : float
+        Half-width of the std tube on the third figure (default 1).
+    sample_alpha : float
+        Per-trace opacity. 50 traces at 0.15 ≈ solid at peaks.
+
+    Returns
+    -------
+    fig_raw : Figure
+        Raw sample overlay (traces only).
+    fig_overlay : Figure
+        Annotated overlay with percentile band and median.
+    fig_tube : Figure
+        Credible interval (mean ± n_sigma·std) tube.
+    """
+    raman = ensemble["raman"] * frame_duration          # [N, W] counts/frame
+    ref   = reference_raman * frame_duration if reference_raman is not None else None
+
+    p_lo, p_mid, p_hi = percentiles
+    q_lo   = np.percentile(raman, p_lo,  axis=0)        # (W,)
+    median = np.percentile(raman, p_mid, axis=0)        # (W,)
+    q_hi   = np.percentile(raman, p_hi,  axis=0)        # (W,)
+    mean   = raman.mean(axis=0)                          # (W,)
+    std    = raman.std(axis=0, ddof=1)                   # (W,) sample std
+
+    N = len(raman)
+    _BLUE = "#4477AA"
+    _REF  = "crimson"
+
+    title_base = f"N={N}  |  p{p_lo:.0f}/p{p_mid:.0f}/p{p_hi:.0f}"
+    if sample_id is not None:
+        title_base = f"Sample: {sample_id}   |   {title_base}"
+
+    # ── Figure 1: raw traces only ─────────────────────────────────────────────
+    fig_raw, ax_raw = plt.subplots(1, 1, figsize=figsize)
+    for trace in raman:
+        ax_raw.plot(wavenumbers, trace, color=_BLUE, alpha=sample_alpha, linewidth=0.8)
+    if ref is not None:
+        ax_raw.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
+                    label="Ground truth", zorder=7)
+        ax_raw.legend(fontsize=8)
+    ax_raw.set_xlabel("Wavenumber (cm⁻¹)")
+    ax_raw.set_ylabel("Intensity (counts/frame)")
+    ax_raw.set_title(f"Posterior samples — raw overlay (N={N}, α={sample_alpha})   |   {title_base}")
+    ax_raw.grid(True, alpha=0.3)
+    fig_raw.tight_layout()
+
+    # ── Figure 2: annotated overlay ───────────────────────────────────────────
+    fig_overlay, ax_ov = plt.subplots(1, 1, figsize=figsize)
+    for trace in raman:
+        ax_ov.plot(wavenumbers, trace, color=_BLUE, alpha=sample_alpha, linewidth=0.8)
+    ax_ov.fill_between(wavenumbers, q_lo, q_hi,
+                       alpha=0.25, color=_BLUE,
+                       label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band")
+    # Draw median with a white outline for contrast against the dense background
+    ax_ov.plot(wavenumbers, median, color="white",  linewidth=2.5, zorder=5)
+    ax_ov.plot(wavenumbers, median, color=_BLUE,    linewidth=1.4, zorder=6,
+               label=f"Median (p{p_mid:.0f})")
+    if ref is not None:
+        ax_ov.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
+                   label="Ground truth", zorder=7)
+    ax_ov.set_xlabel("Wavenumber (cm⁻¹)")
+    ax_ov.set_ylabel("Intensity (counts/frame)")
+    ax_ov.set_title(f"Posterior samples (N={N}, α={sample_alpha})   |   {title_base}")
+    ax_ov.legend(fontsize=8)
+    ax_ov.grid(True, alpha=0.3)
+    fig_overlay.tight_layout()
+
+    # ── Figure 2: mean ± n_sigma·std tube ────────────────────────────────────
+    fig_tube, ax_tb = plt.subplots(1, 1, figsize=figsize)
+    ax_tb.fill_between(wavenumbers,
+                       mean - n_sigma * std,
+                       mean + n_sigma * std,
+                       alpha=0.35, color=_BLUE,
+                       label=f"Mean ± {n_sigma:.0f}σ  (std range [{std.min():.3f}, {std.max():.3f}])")
+    ax_tb.plot(wavenumbers, mean,   color=_BLUE,       linewidth=2.0, label="Posterior mean")
+    ax_tb.plot(wavenumbers, median, color="darkorange", linewidth=1.5, linestyle="-.",
+               label=f"Median (p{p_mid:.0f})", zorder=5)
+    if ref is not None:
+        ax_tb.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
+                   label="Ground truth", zorder=6)
+    ax_tb.set_xlabel("Wavenumber (cm⁻¹)")
+    ax_tb.set_ylabel("Intensity (counts/frame)")
+    ax_tb.set_title(f"Posterior mean ± {n_sigma:.0f}σ   |   {title_base}")
+    ax_tb.legend(fontsize=8)
+    ax_tb.grid(True, alpha=0.3)
+    fig_tube.tight_layout()
+
+    return fig_raw, fig_overlay, fig_tube
