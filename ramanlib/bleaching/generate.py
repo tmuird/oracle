@@ -17,7 +17,7 @@ from ramanlib.bleaching.physics import (
     l2_normalize,
     linf_normalize,
     interpolate_bases,
-    reconstruct_time_series_numpy
+    reconstruct_time_series_numpy,
 )
 
 
@@ -28,7 +28,9 @@ class SyntheticConfig:
     n_samples: int = 5000
     physics_model: Literal["integrated", "factored", "pointsample"] = "pointsample"
     laser_nm: float = 532.0
-    simulate_raman: bool = False  # controls data source in train.py: False = real ATCC, True = synthetic via ramanspy
+    simulate_raman: bool = (
+        False  # controls data source in train.py: False = real ATCC, True = synthetic via ramanspy
+    )
     # Temporal parameters
     bleaching_times: Optional[List[float]] = None
     bleaching_interval: float = 0.1
@@ -39,6 +41,10 @@ class SyntheticConfig:
 
     # Fluorophore parameters
     n_fluorophores: int = 3
+    # When set, use n_fluorophores as the bank size and randomly draw
+    # n_active_per_sample of them per generated sample (abundances of the
+    # remaining ones are zero). Requires use_shared_bases=True.
+    n_active_per_sample: Optional[int] = None
 
     # Decay rate sampling strategy
     decay_sampling: Literal["uniform", "log_uniform", "multi_component"] = (
@@ -77,7 +83,9 @@ class SyntheticConfig:
     # shared_axis: bool = True
     fluorophore_variation: float = 0.0
     interpolation_method: Literal["linear", "spline", "pchip"] = "pchip"
-    smooth_sigma: float = 0.0  # Gaussian smoothing of interpolated bases (cm⁻¹); 0 = off
+    smooth_sigma: float = (
+        0.0  # Gaussian smoothing of interpolated bases (cm⁻¹); 0 = off
+    )
 
     seed: Optional[int] = None
 
@@ -91,6 +99,13 @@ class SyntheticConfig:
             raise ValueError("fr_ratio_min must be <= fr_ratio_max")
         if self.n_fluorophores < 1:
             raise ValueError("n_fluorophores must be at least 1")
+        if self.n_active_per_sample is not None:
+            if self.n_active_per_sample < 1:
+                raise ValueError("n_active_per_sample must be >= 1")
+            if self.n_active_per_sample > self.n_fluorophores:
+                raise ValueError("n_active_per_sample must be <= n_fluorophores")
+            if not self.use_shared_bases:
+                raise ValueError("n_active_per_sample requires use_shared_bases=True")
         if self.poisson_noise_scale < 0:
             raise ValueError("poisson_noise_scale must be non-negative")
         if self.gaussian_noise_scale < 0:
@@ -119,10 +134,10 @@ class SyntheticBleachingDataset:
     """
 
     def __init__(
-            self,
-            config: SyntheticConfig,
-            raman_xr: Optional[xr.Dataset] = None,
-            fluorophore_xr: Optional[xr.Dataset] = None,
+        self,
+        config: SyntheticConfig,
+        raman_xr: Optional[xr.Dataset] = None,
+        fluorophore_xr: Optional[xr.Dataset] = None,
     ):
         """
         Parameters
@@ -137,7 +152,9 @@ class SyntheticBleachingDataset:
             Real fluorophore emission spectra. If None, generates synthetic.
         """
         if raman_xr is None:
-            raise ValueError("raman_xr must be provided — call load_data_sources() before constructing SyntheticBleachingDataset")
+            raise ValueError(
+                "raman_xr must be provided — call load_data_sources() before constructing SyntheticBleachingDataset"
+            )
 
         self.config = config
         self.raman_xr = raman_xr
@@ -158,7 +175,9 @@ class SyntheticBleachingDataset:
         # ATCC data has an integration_time dimension; select the longest exposure.
         # Synthetic data from ramanspy may not, in which case use it directly.
         if "integration_time" in raman_xr.dims or "integration_time" in raman_xr.coords:
-            latest_time = config.integration_times[-1] if config.integration_times else "15s"
+            latest_time = (
+                config.integration_times[-1] if config.integration_times else "15s"
+            )
             self.raman_spectra = raman_xr.sel(integration_time=latest_time)
             print(f"Integration time: '{latest_time}'")
         else:
@@ -177,7 +196,9 @@ class SyntheticBleachingDataset:
         if self.wavenumbers.ndim == 1:
             n_raman_samples = len(self.raman_spectra["sample"])
             self.wavenumbers = np.tile(self.wavenumbers, (n_raman_samples, 1))
-            print(f"Wavenumber axis: shared (expanded to shape {self.wavenumbers.shape})")
+            print(
+                f"Wavenumber axis: shared (expanded to shape {self.wavenumbers.shape})"
+            )
         else:
             print(f"Wavenumber axis: per-sample (shape {self.wavenumbers.shape})")
 
@@ -274,7 +295,9 @@ class SyntheticBleachingDataset:
         bases = fluor_ds["intensity"].isel(sample=indices).values
 
         bases_processed = interpolate_bases(
-            bases, source_wn, target_wavenumbers,
+            bases,
+            source_wn,
+            target_wavenumbers,
             method=self.config.interpolation_method,
             smooth_sigma=self.config.smooth_sigma,
         )
@@ -300,9 +323,9 @@ class SyntheticBleachingDataset:
 
         return linf_normalize(bases_processed, axis=1)
 
-    def _generate_decay_rates(self) -> np.ndarray:
+    def _generate_decay_rates(self, n: Optional[int] = None) -> np.ndarray:
         """Sample decay rates according to configured strategy."""
-        n_f = self.config.n_fluorophores
+        n_f = n if n is not None else self.config.n_fluorophores
 
         if self.config.decay_sampling == "uniform":
             return self.rng.uniform(
@@ -322,9 +345,9 @@ class SyntheticBleachingDataset:
         elif self.config.decay_sampling == "multi_component":
             decay_rates = []
             components = (
-                    ["slow"] * ((n_f + 2) // 3)
-                    + ["medium"] * ((n_f + 1) // 3)
-                    + ["fast"] * (n_f // 3)
+                ["slow"] * ((n_f + 2) // 3)
+                + ["medium"] * ((n_f + 1) // 3)
+                + ["fast"] * (n_f // 3)
             )
             components = components[:n_f]
 
@@ -347,10 +370,10 @@ class SyntheticBleachingDataset:
             )
 
     def _generate_abundances(
-            self, raman_spectrum: np.ndarray, bases: np.ndarray
+        self, raman_spectrum: np.ndarray, bases: np.ndarray, n: Optional[int] = None
     ) -> np.ndarray:
         """Generate abundances ensuring proper F/R ratio at t=0."""
-        n_f = self.config.n_fluorophores
+        n_f = n if n is not None else self.config.n_fluorophores
         fr_ratio = self.rng.uniform(self.config.fr_ratio_min, self.config.fr_ratio_max)
         raman_peak = raman_spectrum.max()
         # When raman is disabled (simulate_raman=False), peak is 0; use unit scale instead
@@ -373,9 +396,9 @@ class SyntheticBleachingDataset:
         return abundances
 
     def _add_noise(
-            self,
-            raman: np.ndarray,
-            fluorescence: np.ndarray,
+        self,
+        raman: np.ndarray,
+        fluorescence: np.ndarray,
     ) -> np.ndarray:
         """Add realistic noise to clean signal."""
         signal = raman + fluorescence
@@ -402,7 +425,7 @@ class SyntheticBleachingDataset:
             noise = self.rng.normal(0, noise_std, signal.shape)
             # return np.maximum(signal + noise, 0)  # no negative counts
 
-            return signal + noise # allow for negatives
+            return signal + noise  # allow for negatives
 
         elif self.config.noise_type == "poisson_gaussian":
             #  detector noise model: shot noise + read noise
@@ -413,7 +436,7 @@ class SyntheticBleachingDataset:
             shot_noisy = self.rng.poisson(scaled) / self.config.poisson_noise_scale
 
             # 2. Read noise (Gaussian) - constant, detector property
-            # Typical CCD: ~5 counts RMS. Scale this by gaussian_noise_scale     
+            # Typical CCD: ~5 counts RMS. Scale this by gaussian_noise_scale
             read_noise_std = self.config.gaussian_noise_scale
             read_noise = self.rng.normal(0, read_noise_std, signal.shape)
 
@@ -439,8 +462,8 @@ class SyntheticBleachingDataset:
         psnr_db = peak_signal_noise_ratio(clean, noisy, data_range=data_range)
 
         # SNR (signal power / noise power)
-        signal_power = np.mean(clean ** 2)
-        noise_power = np.mean(noise ** 2)
+        signal_power = np.mean(clean**2)
+        noise_power = np.mean(noise**2)
         snr_db = (
             10 * np.log10(signal_power / noise_power)
             if noise_power > 0
@@ -456,17 +479,22 @@ class SyntheticBleachingDataset:
         }
 
     def _reconstruct_time_series(
-            self,
-            raman: np.ndarray,
-            bases: np.ndarray,
-            abundances: np.ndarray,
-            decay_rates: np.ndarray,
-            physics_model: str,
+        self,
+        raman: np.ndarray,
+        bases: np.ndarray,
+        abundances: np.ndarray,
+        decay_rates: np.ndarray,
+        physics_model: str,
     ) -> Tuple[np.ndarray, np.ndarray]:
         print(f"Reconstructing according to physics model: {physics_model}")
         clean = reconstruct_time_series_numpy(
-            raman, bases, abundances, decay_rates, self.bleaching_times,
-            frame_duration=self.config.bleaching_interval, physics_model=physics_model
+            raman,
+            bases,
+            abundances,
+            decay_rates,
+            self.bleaching_times,
+            frame_duration=self.config.bleaching_interval,
+            physics_model=physics_model,
         )
 
         n_t = len(self.bleaching_times)
@@ -532,13 +560,34 @@ class SyntheticBleachingDataset:
                 bases = self._generate_fluorophore_bases(wn)
                 bases_storage_temp.append(bases)
 
-            decay_rates = self._generate_decay_rates()
-            abundances = self._generate_abundances(raman, bases)
+            n_active = self.config.n_active_per_sample
             physics_model = self.config.physics_model
-            print(f"Using physics mode: {physics_model}")
-            noisy, clean = self._reconstruct_time_series(
-                raman, bases, abundances, decay_rates, physics_model
-            )
+            if n_active is not None:
+                # Bank-of-N, draw-K mode: randomly select n_active from the bank.
+                # Only active components contribute to the signal; inactive ones
+                # have zero abundance in the stored GT but their basis spectra are
+                # still present in the shared bank (fluorophore_bases_gt).
+                active_idx = self.rng.choice(n_f, n_active, replace=False)
+                active_bases = bases[active_idx]
+                active_rates = self._generate_decay_rates(n=n_active)
+                active_abund = self._generate_abundances(
+                    raman, active_bases, n=n_active
+                )
+
+                decay_rates = np.zeros(n_f, dtype=np.float32)
+                abundances = np.zeros(n_f, dtype=np.float32)
+                decay_rates[active_idx] = active_rates
+                abundances[active_idx] = active_abund
+
+                noisy, clean = self._reconstruct_time_series(
+                    raman, active_bases, active_abund, active_rates, physics_model
+                )
+            else:
+                decay_rates = self._generate_decay_rates()
+                abundances = self._generate_abundances(raman, bases)
+                noisy, clean = self._reconstruct_time_series(
+                    raman, bases, abundances, decay_rates, physics_model
+                )
 
             intensity_noisy[i] = noisy
             intensity_clean[i] = clean

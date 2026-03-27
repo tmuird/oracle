@@ -13,12 +13,12 @@ from ramanlib.core import SpectralData
 
 
 def visualize_data_3d(
-        data: np.ndarray,
-        time_values: Optional[np.ndarray] = None,
-        wavenumbers: Optional[np.ndarray] = None,
-        subsample_wn: int = 2,
-        subsample_time: int = 1,
-        title: str = "3D Dataset Visualization",
+    data: np.ndarray,
+    time_values: Optional[np.ndarray] = None,
+    wavenumbers: Optional[np.ndarray] = None,
+    subsample_wn: int = 2,
+    subsample_time: int = 1,
+    title: str = "3D Dataset Visualization",
 ):
     """
     3D visualization of a raw data sample using plotly.
@@ -85,22 +85,24 @@ from ramanlib.bleaching.decompose import DecompositionResult
 
 
 def visualise_decomposition(
-        data: SpectralData,
-        decomposition: DecompositionResult,
-        reference_raman: Optional[np.ndarray] = None,
-        reference_bases: Optional[np.ndarray] = None,
-        reference_rates: Optional[np.ndarray] = None,
-        reference_abundances: Optional[np.ndarray] = None,
-        normalise: bool = False,
-        figsize: Tuple[int, int] = (20, 10),
-        n_train: Optional[int] = None,
-        sample_id: Optional[str] = None,
+    data: SpectralData,
+    data_clean: SpectralData,
+    decomposition: DecompositionResult,
+    reference_raman: Optional[np.ndarray] = None,
+    reference_bases: Optional[np.ndarray] = None,
+    reference_rates: Optional[np.ndarray] = None,
+    reference_abundances: Optional[np.ndarray] = None,
+    normalise: bool = False,
+    figsize: Tuple[int, int] = (20, 10),
+    n_train: Optional[int] = None,
+    sample_id: Optional[str] = None,
 ):
     """
     Visualize spectral decomposition results.
 
     Args:
         data: Original time series as SpectralData (must have time_values set).
+        data_clean: Cleaned time series as SpectralData (must have time_values set).
         decomposition: DecompositionResult from predict_from_early.
             physics_model and frame_duration are read from decomposition automatically.
         reference_raman: GT Raman spectrum for comparison. If None, uses last 20 frames avg.
@@ -124,6 +126,7 @@ def visualise_decomposition(
 
     raman = decomposition.raman.intensities
     Y = data.intensities
+    Y_clean = data_clean.intensities
     n_t, n_wn = Y.shape
     time_values = data.time_values
     bases = decomposition.fluorophore_spectra.intensities
@@ -182,7 +185,9 @@ def visualise_decomposition(
         used_refs: set = set()
         order = np.argsort(-corr_matrix.max(axis=1))
         for p in order:
-            available = [(j, corr_matrix[p, j]) for j in range(n_ref) if j not in used_refs]
+            available = [
+                (j, corr_matrix[p, j]) for j in range(n_ref) if j not in used_refs
+            ]
             if available:
                 best_ref, best_corr = max(available, key=lambda x: x[1])
                 pred_to_ref[p] = (best_ref, float(best_corr))
@@ -190,7 +195,11 @@ def visualise_decomposition(
             else:
                 pred_to_ref[p] = (None, 0.0)
         pred_colors = [
-            _COLORS[pred_to_ref[i][0] % len(_COLORS)] if pred_to_ref[i][0] is not None else "#888888"
+            (
+                _COLORS[pred_to_ref[i][0] % len(_COLORS)]
+                if pred_to_ref[i][0] is not None
+                else "#888888"
+            )
             for i in range(n_fluorophores)
         ]
         ref_colors = [_COLORS[j % len(_COLORS)] for j in range(n_ref)]
@@ -207,10 +216,18 @@ def visualise_decomposition(
         if t_train_cutoff is None:
             return
         if orientation == "v":
-            ax.axvline(t_train_cutoff, color="#444444", linestyle="--", linewidth=1.8,
-                       label=f"Train cutoff (n={n_train})", zorder=5)
+            ax.axvline(
+                t_train_cutoff,
+                color="#444444",
+                linestyle="--",
+                linewidth=1.8,
+                label=f"Train cutoff (n={n_train})",
+                zorder=5,
+            )
         else:
-            ax.axhline(t_train_cutoff, color="#444444", linestyle="--", linewidth=1.8, zorder=5)
+            ax.axhline(
+                t_train_cutoff, color="#444444", linestyle="--", linewidth=1.8, zorder=5
+            )
 
     # ── Plot 1: Original Time Series + Reconstruction overlay ─────────────────
     ax = axes[0, 0]
@@ -219,12 +236,20 @@ def visualise_decomposition(
     show_indices = np.arange(n_show)
     for i, idx in enumerate(show_indices):
         c = cmap_ts(i / max(n_show - 1, 1))
-        t_label = f"t={time_values[idx]:.2f}s" if time_values is not None else f"frame {idx}"
+        t_label = (
+            f"t={time_values[idx]:.2f}s" if time_values is not None else f"frame {idx}"
+        )
         ax.plot(wavenumbers, Y[idx], color=c, alpha=0.8, linewidth=1.2, label=t_label)
-        ax.plot(wavenumbers, reconstruction[idx], color=c, alpha=0.5,
-                linewidth=1.0, linestyle="--")
+        ax.plot(
+            wavenumbers,
+            reconstruction[idx],
+            color=c,
+            alpha=0.5,
+            linewidth=1.0,
+            linestyle="--",
+        )
     # Dummy lines for legend
-    ax.plot([], [], "k-",  linewidth=1.5, label="Observed")
+    ax.plot([], [], "k-", linewidth=1.5, label="Observed")
     ax.plot([], [], "k--", linewidth=1.0, alpha=0.6, label="Reconstructed")
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity (counts/frame)")
@@ -234,10 +259,21 @@ def visualise_decomposition(
 
     # ── Plot 2: Extracted Raman vs reference ─────────────────────────────────
     ax = axes[0, 1]
-    ax.plot(wavenumbers, raman_per_frame, color=_COLORS[0], linewidth=2,
-            label="Predicted Raman")
-    ax.plot(wavenumbers, ref_raman_per_frame, "r--", linewidth=1.5, alpha=0.8,
-            label=ref_raman_label)
+    ax.plot(
+        wavenumbers,
+        raman_per_frame,
+        color=_COLORS[0],
+        linewidth=2,
+        label="Predicted Raman",
+    )
+    ax.plot(
+        wavenumbers,
+        ref_raman_per_frame,
+        "r--",
+        linewidth=1.5,
+        alpha=0.8,
+        label=ref_raman_label,
+    )
     raman_corr = np.corrcoef(raman_per_frame, ref_raman_per_frame)[0, 1]
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity (counts/frame)")
@@ -256,8 +292,10 @@ def visualise_decomposition(
                 b_plot = b_plot / peak if peak > 0 else b_plot
             corr_str = f", r={pred_to_ref[i][1]:.2f}" if has_reference else ""
             ax.plot(
-                wavenumbers, b_plot,
-                color=pred_colors[i], linewidth=2,
+                wavenumbers,
+                b_plot,
+                color=pred_colors[i],
+                linewidth=2,
                 label=f"Pred B{i+1} (τ={tau:.3f}s{corr_str})",
             )
     if has_reference:
@@ -268,13 +306,19 @@ def visualise_decomposition(
                 peak = b_ref.max()
                 b_ref = b_ref / peak if peak > 0 else b_ref
             ax.plot(
-                wavenumbers, b_ref,
-                color=ref_colors[j], linewidth=1.5, linestyle="--", alpha=0.8,
+                wavenumbers,
+                b_ref,
+                color=ref_colors[j],
+                linewidth=1.5,
+                linestyle="--",
+                alpha=0.8,
                 label=f"GT B{j+1} (τ={tau_gt:.3f}s, w={reference_abundances[j]:.1f})",
             )
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Normalised intensity" if normalise else "Intensity")
-    ax.set_title("Fluorophore Basis Spectra\n(solid=pred, dashed=GT, colour=matched pair)")
+    ax.set_title(
+        "Fluorophore Basis Spectra\n(solid=pred, dashed=GT, colour=matched pair)"
+    )
     ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
 
@@ -285,7 +329,7 @@ def visualise_decomposition(
         for i in range(n_fluorophores):
             fluor_series = reconstruct_time_series_numpy(
                 raman=np.zeros(bases.shape[1]),
-                bases=bases[i:i + 1, :],
+                bases=bases[i : i + 1, :],
                 abundances=np.array([abundances[i]]),
                 decay_rates=np.array([rates[i]]),
                 time_values=time_values,
@@ -295,14 +339,19 @@ def visualise_decomposition(
             amplitude = fluor_series.mean(axis=1)
             total_fluor += amplitude
             tau = time_constants[i]
-            ax.plot(time_values, amplitude, color=pred_colors[i], linewidth=1.5,
-                    label=f"τ={tau:.3f}s, w={abundances[i]:.1f}")
+            ax.plot(
+                time_values,
+                amplitude,
+                color=pred_colors[i],
+                linewidth=1.5,
+                label=f"τ={tau:.3f}s, w={abundances[i]:.1f}",
+            )
     if has_reference:
         total_gt_fluor = np.zeros(n_t)
         for j in range(n_ref):
             fluor_series = reconstruct_time_series_numpy(
                 raman=np.zeros(reference_bases.shape[1]),
-                bases=reference_bases[j:j + 1, :],
+                bases=reference_bases[j : j + 1, :],
                 abundances=np.array([reference_abundances[j]]),
                 decay_rates=np.array([reference_rates[j]]),
                 time_values=time_values,
@@ -311,10 +360,18 @@ def visualise_decomposition(
             )
             amplitude = fluor_series.mean(axis=1)
             total_gt_fluor += amplitude
-            ax.plot(time_values, amplitude,
-                    color=ref_colors[j], linestyle="--", linewidth=1.5, alpha=0.8,
-                    label=f"GT τ={1.0 / reference_rates[j]:.3f}s, w={reference_abundances[j]:.1f}")
-        ax.plot(time_values, total_gt_fluor, "r--", linewidth=2, label="Total GT fluor.")
+            ax.plot(
+                time_values,
+                amplitude,
+                color=ref_colors[j],
+                linestyle="--",
+                linewidth=1.5,
+                alpha=0.8,
+                label=f"GT τ={1.0 / reference_rates[j]:.3f}s, w={reference_abundances[j]:.1f}",
+            )
+        ax.plot(
+            time_values, total_gt_fluor, "r--", linewidth=2, label="Total GT fluor."
+        )
     ax.plot(time_values, total_fluor, "k-", linewidth=2, label="Total Predicted")
     _add_train_cutoff(ax)
     if t_train_cutoff is not None:
@@ -327,32 +384,65 @@ def visualise_decomposition(
     ax.grid(True, alpha=0.3)
 
     # ── Plot 5: First Frame Reconstruction ───────────────────────────────────
-    # ── Plot 5: First Frame Reconstruction ───────────────────────────────────
     ax = axes[1, 1]
-    ax.plot(wavenumbers, Y[0], "r--", linewidth=1.5, alpha=0.8, label="Original (t=0)")
-    ax.plot(wavenumbers, reconstruction[0], color=_COLORS[0], linewidth=1.5, alpha=0.9,
-            label="Reconstructed (t=0)")
+    ax.plot(
+        wavenumbers,
+        Y[0],
+        "r--",
+        linewidth=1.5,
+        alpha=0.6,
+        label="Original (t=0)",
+    )
+    ax.plot(
+        wavenumbers,
+        Y_clean[0],
+        "g--",
+        linewidth=1.5,
+        alpha=0.8,
+        label="Clean Original (t=0)",
+    )
+    ax.plot(
+        wavenumbers,
+        reconstruction[0],
+        color=_COLORS[0],
+        linewidth=1.5,
+        alpha=1,
+        label="Reconstructed (t=0)",
+    )
     t0_mse = float(np.mean((Y[0] - reconstruction[0]) ** 2))
+    t0_mse_clean = float(np.mean((Y_clean[0] - reconstruction[0]) ** 2))
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity (counts/frame)")
-    ax.set_title(f"Reconstruction (t=0)  MSE={t0_mse:.2f}")
+    ax.set_title(
+        f"Reconstruction (t=0)  MSE={t0_mse:.2f}  MSE Clean={t0_mse_clean:.2f}"
+    )
     ax.legend()
     ax.grid(True, alpha=0.3)
 
     # ── Plot 6: MSE over time (log scale) ────────────────────────────────────
     ax = axes[1, 2]
     residuals = Y - reconstruction
-    mse_over_time = np.mean(residuals ** 2, axis=1)
+    mse_over_time = np.mean(residuals**2, axis=1)
     mse_all = float(mse_over_time.mean())
     n_first = n_train if n_train else 20
     mse_first = float(mse_over_time[:n_first].mean())
     ax.semilogy(time_values, mse_over_time, "k-", linewidth=1.5, label="MSE per frame")
     _add_train_cutoff(ax)
     if t_train_cutoff is not None:
-        ax.axvspan(time_values[0], t_train_cutoff, alpha=0.06, color="steelblue",
-                   label="Training region")
-        ax.axvspan(t_train_cutoff, time_values[-1], alpha=0.06, color="darkorange",
-                   label="Extrapolation region")
+        ax.axvspan(
+            time_values[0],
+            t_train_cutoff,
+            alpha=0.06,
+            color="steelblue",
+            label="Training region",
+        )
+        ax.axvspan(
+            t_train_cutoff,
+            time_values[-1],
+            alpha=0.06,
+            color="darkorange",
+            label="Extrapolation region",
+        )
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("MSE (log scale)")
     ax.set_title("MSE Over Time")
@@ -385,7 +475,11 @@ def visualise_decomposition(
             if ref_j is not None:
                 tau_pred = time_constants[p]
                 tau_gt = 1.0 / reference_rates[ref_j]
-                rate_err_pct = 100.0 * abs(rates[p] - reference_rates[ref_j]) / reference_rates[ref_j]
+                rate_err_pct = (
+                    100.0
+                    * abs(rates[p] - reference_rates[ref_j])
+                    / reference_rates[ref_j]
+                )
                 print(
                     f"  Pred B{p+1} (τ={tau_pred:.3f}s, w={abundances[p]:.1f})  →  "
                     f"GT B{ref_j+1} (τ={tau_gt:.3f}s, w={reference_abundances[ref_j]:.1f}):  "
@@ -401,19 +495,21 @@ def visualise_decomposition(
         else:
             rates_est_sorted = np.sort(decomposition.rates)
         rates_gt_sorted = np.sort(reference_rates)
-        rate_errors_pct = 100.0 * np.abs(rates_est_sorted - rates_gt_sorted) / rates_gt_sorted
+        rate_errors_pct = (
+            100.0 * np.abs(rates_est_sorted - rates_gt_sorted) / rates_gt_sorted
+        )
         print(f"\nRate errors % (sorted, naive 1-to-1): {np.round(rate_errors_pct, 1)}")
 
     return fig, axes
 
 
 def plot_parameter_detail(
-        decomposition: DecompositionResult,
-        reference_bases: np.ndarray,
-        reference_rates: np.ndarray,
-        reference_abundances: np.ndarray,
-        n_train: Optional[int] = None,
-        sample_id: Optional[str] = None,
+    decomposition: DecompositionResult,
+    reference_bases: np.ndarray,
+    reference_rates: np.ndarray,
+    reference_abundances: np.ndarray,
+    n_train: Optional[int] = None,
+    sample_id: Optional[str] = None,
 ):
     """
     Two detail figures (returned as a tuple):
@@ -430,11 +526,11 @@ def plot_parameter_detail(
     """
     _COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    bases      = decomposition.fluorophore_spectra.intensities
+    bases = decomposition.fluorophore_spectra.intensities
     abundances = decomposition.abundances
-    rates      = decomposition.rates
+    rates = decomposition.rates
     n_fluorophores = len(rates)
-    n_ref          = len(reference_rates)
+    n_ref = len(reference_rates)
 
     # Wavenumbers: prefer fluorophore_spectra axis, fall back to raman axis
     wavenumbers = decomposition.fluorophore_spectra.wavenumbers
@@ -473,7 +569,11 @@ def plot_parameter_detail(
             pred_to_ref[p] = (None, 0.0)
 
     pred_colors = [
-        _COLORS[pred_to_ref[i][0] % len(_COLORS)] if pred_to_ref[i][0] is not None else "#888888"
+        (
+            _COLORS[pred_to_ref[i][0] % len(_COLORS)]
+            if pred_to_ref[i][0] is not None
+            else "#888888"
+        )
         for i in range(n_fluorophores)
     ]
     ref_colors = [_COLORS[j % len(_COLORS)] for j in range(n_ref)]
@@ -485,13 +585,22 @@ def plot_parameter_detail(
     im = ax_corr.imshow(corr_matrix, vmin=-1, vmax=1, cmap="RdBu", aspect="auto")
     ax_corr.set_xticks(range(n_ref))
     ax_corr.set_yticks(range(n_fluorophores))
-    ax_corr.set_xticklabels([f"GT B{j+1}" for j in range(n_ref)], rotation=45, ha="right", fontsize=9)
+    ax_corr.set_xticklabels(
+        [f"GT B{j+1}" for j in range(n_ref)], rotation=45, ha="right", fontsize=9
+    )
     ax_corr.set_yticklabels([f"Pred B{i+1}" for i in range(n_fluorophores)], fontsize=9)
     for i in range(n_fluorophores):
         for j in range(n_ref):
             text_color = "white" if abs(corr_matrix[i, j]) > 0.6 else "black"
-            ax_corr.text(j, i, f"{corr_matrix[i, j]:.2f}", ha="center", va="center",
-                         fontsize=9, color=text_color)
+            ax_corr.text(
+                j,
+                i,
+                f"{corr_matrix[i, j]:.2f}",
+                ha="center",
+                va="center",
+                fontsize=9,
+                color=text_color,
+            )
     plt.colorbar(im, ax=ax_corr, shrink=0.8, label="Pearson r")
     ax_corr.set_title("Basis Correlation")
     ax_corr.set_xlabel("GT Bases")
@@ -515,8 +624,12 @@ def plot_parameter_detail(
     ]:
         if xs:
             for x, y, c, lbl in zip(xs, ys, pair_cols, pair_labels):
-                ax.scatter(x, y, color=c, s=110, zorder=5, edgecolors="k", linewidths=0.5)
-                ax.annotate(lbl, (x, y), textcoords="offset points", xytext=(5, 4), fontsize=7)
+                ax.scatter(
+                    x, y, color=c, s=110, zorder=5, edgecolors="k", linewidths=0.5
+                )
+                ax.annotate(
+                    lbl, (x, y), textcoords="offset points", xytext=(5, 4), fontsize=7
+                )
             lo = 0.0
             hi = float(max(max(xs), max(ys))) * 1.2
             ax.plot([lo, hi], [lo, hi], "k--", linewidth=1, alpha=0.5, label="1:1")
@@ -537,7 +650,8 @@ def plot_parameter_detail(
     n_cols = min(n_fluorophores, 4)
     n_rows = int(np.ceil(n_fluorophores / n_cols))
     fig_comps, axes_c = plt.subplots(
-        n_rows, n_cols,
+        n_rows,
+        n_cols,
         figsize=(5 * n_cols, 4 * n_rows),
         squeeze=False,
     )
@@ -547,16 +661,27 @@ def plot_parameter_detail(
         ax = axes_c[row][col]
         tau_pred = 1.0 / rates[i]
         pred_comp = float(abundances[i]) * bases[i]
-        ax.plot(wavenumbers, pred_comp, color=pred_colors[i], linewidth=2,
-                label=f"Pred  τ={tau_pred:.3f}s  w={abundances[i]:.2f}")
+        ax.plot(
+            wavenumbers,
+            pred_comp,
+            color=pred_colors[i],
+            linewidth=2,
+            label=f"Pred  τ={tau_pred:.3f}s  w={abundances[i]:.2f}",
+        )
 
         ref_j, corr_val = pred_to_ref[i]
         if ref_j is not None:
-            tau_gt  = 1.0 / reference_rates[ref_j]
+            tau_gt = 1.0 / reference_rates[ref_j]
             gt_comp = float(reference_abundances[ref_j]) * reference_bases[ref_j]
-            ax.plot(wavenumbers, gt_comp, color=ref_colors[ref_j],
-                    linestyle="--", linewidth=1.5, alpha=0.85,
-                    label=f"GT    τ={tau_gt:.3f}s  w={reference_abundances[ref_j]:.2f}")
+            ax.plot(
+                wavenumbers,
+                gt_comp,
+                color=ref_colors[ref_j],
+                linestyle="--",
+                linewidth=1.5,
+                alpha=0.85,
+                label=f"GT    τ={tau_gt:.3f}s  w={reference_abundances[ref_j]:.2f}",
+            )
             ax.set_title(f"Component {i + 1}  (r={corr_val:.3f})")
         else:
             ax.set_title(f"Component {i + 1}  (no GT match)")
@@ -570,7 +695,9 @@ def plot_parameter_detail(
         row, col = divmod(i, n_cols)
         axes_c[row][col].set_visible(False)
 
-    title_comps = "Individual Components: abundance × basis at t=0  (solid=pred, dashed=GT)"
+    title_comps = (
+        "Individual Components: abundance × basis at t=0  (solid=pred, dashed=GT)"
+    )
     if info_str:
         title_comps += f"\n{info_str}"
     fig_comps.suptitle(title_comps, fontsize=10)
@@ -588,7 +715,7 @@ except ImportError:
 
 
 def get_fluorophore_corrs(
-        predicted: SpectralData, reference: SpectralData
+    predicted: SpectralData, reference: SpectralData
 ) -> pd.DataFrame:
     """Find top k fluorophores in a reference dataset with the highest pearson correlations"""
     pred_wn = predicted.wavenumbers
@@ -613,13 +740,12 @@ def get_fluorophore_corrs(
 
 
 def get_fluorophore_contribution(
-        ds: xr.Dataset,
-        sample_idx: int,
-        fluorophore_idx: int,
-        physics_model: str,
-        time_seconds: Optional[float] = None,
-        frame_duration: Optional[float] = None,
-
+    ds: xr.Dataset,
+    sample_idx: int,
+    fluorophore_idx: int,
+    physics_model: str,
+    time_seconds: Optional[float] = None,
+    frame_duration: Optional[float] = None,
 ) -> np.ndarray:
     """
     Compute contribution of a single fluorophore at a given time using CCD integration.
@@ -679,18 +805,16 @@ def get_fluorophore_contribution(
         time_values=np.array([time_seconds]),
         physics_model=physics_model,
         frame_duration=frame_duration,
-
     )
     return result[0]  # [1, W] -> [W]
 
 
 def get_total_fluorescence(
-        ds: xr.Dataset,
-        sample_idx: int,
-        time_seconds: float,
-        physics_model: str,
-        frame_duration: Optional[float] = None,
-
+    ds: xr.Dataset,
+    sample_idx: int,
+    time_seconds: float,
+    physics_model: str,
+    frame_duration: Optional[float] = None,
 ) -> np.ndarray:
     """
     Compute total fluorescence at a given time using CCD integration model.
@@ -707,17 +831,22 @@ def get_total_fluorescence(
     total = np.zeros(n_wn)
     for i in range(n_fluorophores):
         total += get_fluorophore_contribution(
-            ds, sample_idx, i, time_seconds, frame_duration=frame_duration, physics_model=physics_model
+            ds,
+            sample_idx,
+            i,
+            time_seconds,
+            frame_duration=frame_duration,
+            physics_model=physics_model,
         )
 
     return total
 
 
 def get_full_decomposition(
-        ds: xr.Dataset,
-        sample_idx: int,
-        time_seconds: float,
-        physics_model: str,
+    ds: xr.Dataset,
+    sample_idx: int,
+    time_seconds: float,
+    physics_model: str,
 ) -> Dict:
     """
     Get all components of the decomposition at a given time.
@@ -761,8 +890,13 @@ def get_full_decomposition(
     # Use integrated model for single frame (matches data generation)
     t_single = np.array([actual_time])
     reconstructed_frame = reconstruct_time_series_numpy(
-        raman, bases, abundances, decay_rates, t_single,
-        frame_duration=frame_duration, physics_model=physics_model
+        raman,
+        bases,
+        abundances,
+        decay_rates,
+        t_single,
+        frame_duration=frame_duration,
+        physics_model=physics_model,
     )
     reconstructed = reconstructed_frame[0]  # [1, W] -> [W]
 
@@ -777,7 +911,7 @@ def get_full_decomposition(
     for i in range(n_fluorophores):
         contrib = reconstruct_time_series_numpy(
             raman=np.zeros(bases.shape[1]),
-            bases=bases[i:i + 1, :],
+            bases=bases[i : i + 1, :],
             abundances=np.array([abundances[i]]),
             decay_rates=np.array([decay_rates[i]]),
             time_values=t_single,
@@ -812,12 +946,12 @@ def get_full_decomposition(
 
 
 def plot_decomposition(
-        ds: xr.Dataset,
-        sample_idx: int,
-        time_seconds: float,
-        physics_model: str,
-        figsize: Tuple[int, int] = (14, 10),
-        show_noisy: bool = True,
+    ds: xr.Dataset,
+    sample_idx: int,
+    time_seconds: float,
+    physics_model: str,
+    figsize: Tuple[int, int] = (14, 10),
+    show_noisy: bool = True,
 ) -> Figure:
     """
     Plot full decomposition for a single sample at a given time.
@@ -906,7 +1040,7 @@ def plot_decomposition(
     ax3.axhline(0, color="r", linestyle="--", alpha=0.5)
     ax3.fill_between(wn, residual, 0, alpha=0.3)
 
-    rmse = np.sqrt(np.mean(residual ** 2))
+    rmse = np.sqrt(np.mean(residual**2))
     ax3.set_xlabel("Wavenumber (cm⁻¹)")
     ax3.set_ylabel("Residual")
     ax3.set_title(f"Residual (RMSE = {rmse:.4f})")
@@ -917,10 +1051,10 @@ def plot_decomposition(
 
 
 def plot_temporal_decomposition(
-        ds: xr.Dataset,
-        sample_idx: int,
-        physics_model: str,
-        figsize: Tuple[int, int] = (14, 8),
+    ds: xr.Dataset,
+    sample_idx: int,
+    physics_model: str,
+    figsize: Tuple[int, int] = (14, 8),
 ) -> Figure:
     """
     Plot decomposition across all time points for a single sample.
@@ -1034,7 +1168,11 @@ def plot_temporal_decomposition(
 
         τ = 1.0 / decay_rates[i]
         ax.plot(
-            wn, B_i, color=fluor_colors[i], linewidth=1.5, label=f"B{i + 1} (τ={τ:.3f}s)"
+            wn,
+            B_i,
+            color=fluor_colors[i],
+            linewidth=1.5,
+            label=f"B{i + 1} (τ={τ:.3f}s)",
         )
 
     ax.set_xlabel("Wavenumber (cm⁻¹)")
@@ -1049,10 +1187,10 @@ def plot_temporal_decomposition(
 
 
 def visualize_decomposition_3d(
-        data: Union[np.ndarray, SpectralData],
-        decomposition: DecompositionResult,
-        subsample_wn: int = 2,
-        subsample_time: int = 1,
+    data: Union[np.ndarray, SpectralData],
+    decomposition: DecompositionResult,
+    subsample_wn: int = 2,
+    subsample_time: int = 1,
 ):
     """
     Interactive 3D visualisation using plotly (allows rotation/zoom).
@@ -1252,14 +1390,14 @@ def visualize_decomposition_3d(
 
 
 def plot_uncertainty(
-        ensemble: dict,
-        wavenumbers: Optional[np.ndarray] = None,
-        time_values: Optional[np.ndarray] = None,
-        reference_raman: Optional[np.ndarray] = None,
-        reference_bases: Optional[np.ndarray] = None,
-        reference_abundances: Optional[np.ndarray] = None,
-        sample_id: Optional[str] = None,
-        ci: float = 0.95,
+    ensemble: dict,
+    wavenumbers: Optional[np.ndarray] = None,
+    time_values: Optional[np.ndarray] = None,
+    reference_raman: Optional[np.ndarray] = None,
+    reference_bases: Optional[np.ndarray] = None,
+    reference_abundances: Optional[np.ndarray] = None,
+    sample_id: Optional[str] = None,
+    ci: float = 0.95,
 ):
     """
     Visualise uncertainty across N stochastic VAE forward passes as heatmaps.
@@ -1285,9 +1423,9 @@ def plot_uncertainty(
     lo_p = 100 * (1 - ci) / 2
     hi_p = 100 - lo_p
 
-    raman_ens   = ensemble["raman"]                  # [N, W]
-    recon_ens   = ensemble["reconstruction"]         # [N, T, W]
-    ab_basis    = ensemble.get("abundance_times_basis")  # [N, F, W] or None
+    raman_ens = ensemble["raman"]  # [N, W]
+    recon_ens = ensemble["reconstruction"]  # [N, T, W]
+    ab_basis = ensemble.get("abundance_times_basis")  # [N, F, W] or None
 
     N = raman_ens.shape[0]
     W = raman_ens.shape[1]
@@ -1305,7 +1443,9 @@ def plot_uncertainty(
     if sample_id is not None:
         title_base = f"Sample: {sample_id}   |   {title_base}"
 
-    def _density_heatmap(ax, fig, ens, wavenumbers, reference=None, ylabel="counts/sec", title=""):
+    def _density_heatmap(
+        ax, fig, ens, wavenumbers, reference=None, ylabel="counts/sec", title=""
+    ):
         """2D density heatmap: x=wavenumber, y=intensity, colour=sample count."""
         n_bins = max(50, N)
         # Include GT in y-range so it's never clipped
@@ -1330,8 +1470,14 @@ def plot_uncertainty(
         mean_line = ens.mean(axis=0)
         ax.plot(wavenumbers, mean_line, color="cyan", linewidth=1.5, label="Mean")
         if reference is not None:
-            ax.plot(wavenumbers, reference, color="lime", linewidth=1.5,
-                    linestyle="--", label="GT")
+            ax.plot(
+                wavenumbers,
+                reference,
+                color="lime",
+                linewidth=1.5,
+                linestyle="--",
+                label="GT",
+            )
         ax.set_xlabel("Wavenumber (cm⁻¹)")
         ax.set_ylabel(ylabel)
         ax.set_title(title)
@@ -1343,7 +1489,10 @@ def plot_uncertainty(
     fig_ens, (ax_rdens, ax_rstd) = plt.subplots(1, 2, figsize=(14, 5))
 
     _density_heatmap(
-        ax_rdens, fig_ens, raman_ens, wavenumbers,
+        ax_rdens,
+        fig_ens,
+        raman_ens,
+        wavenumbers,
         reference=reference_raman,
         ylabel="counts/sec",
         title=f"Raman Intensity Distribution ({N} samples)",
@@ -1377,8 +1526,9 @@ def plot_uncertainty(
     ncols = min(F, 3)
     nrows = -(-F // ncols)  # ceil division
 
-    fig_comps, axes_c = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows),
-                                     squeeze=False)
+    fig_comps, axes_c = plt.subplots(
+        nrows, ncols, figsize=(5 * ncols, 4 * nrows), squeeze=False
+    )
 
     # Greedy basis-correlation matching: mean predicted basis vs GT bases
     pred_to_gt: dict = {}
@@ -1409,10 +1559,14 @@ def plot_uncertainty(
             gt_comp = reference_bases[gt_j] * reference_abundances[gt_j]
 
         _density_heatmap(
-            ax, fig_comps, comp_ens, wavenumbers,
+            ax,
+            fig_comps,
+            comp_ens,
+            wavenumbers,
             reference=gt_comp,
             ylabel="counts",
-            title=f"Component {f + 1}" + (f"  →  GT {gt_j + 1}" if gt_j is not None else ""),
+            title=f"Component {f + 1}"
+            + (f"  →  GT {gt_j + 1}" if gt_j is not None else ""),
         )
 
     # Hide unused subplots
@@ -1427,15 +1581,15 @@ def plot_uncertainty(
 
 
 def plot_raman_posterior(
-        ensemble: dict,
-        wavenumbers: np.ndarray,
-        reference_raman: Optional[np.ndarray] = None,
-        frame_duration: float = 0.1,
-        percentiles: Tuple[float, float, float] = (5.0, 50.0, 95.0),
-        n_sigma: float = 1.0,
-        sample_alpha: float = 0.15,
-        figsize: Tuple[int, int] = (8, 5),
-        sample_id: Optional[str] = None,
+    ensemble: dict,
+    wavenumbers: np.ndarray,
+    reference_raman: Optional[np.ndarray] = None,
+    frame_duration: float = 0.1,
+    percentiles: Tuple[float, float, float] = (5.0, 50.0, 95.0),
+    n_sigma: float = 1.0,
+    sample_alpha: float = 0.15,
+    figsize: Tuple[int, int] = (8, 5),
+    sample_id: Optional[str] = None,
 ) -> Tuple[Figure, Figure, Figure]:
     """
     Three separate posterior figures for N ensemble Raman predictions.
@@ -1476,19 +1630,19 @@ def plot_raman_posterior(
     fig_tube : Figure
         Credible interval (mean ± n_sigma·std) tube.
     """
-    raman = ensemble["raman"] * frame_duration          # [N, W] counts/frame
-    ref   = reference_raman * frame_duration if reference_raman is not None else None
+    raman = ensemble["raman"] * frame_duration  # [N, W] counts/frame
+    ref = reference_raman * frame_duration if reference_raman is not None else None
 
     p_lo, p_mid, p_hi = percentiles
-    q_lo   = np.percentile(raman, p_lo,  axis=0)        # (W,)
-    median = np.percentile(raman, p_mid, axis=0)        # (W,)
-    q_hi   = np.percentile(raman, p_hi,  axis=0)        # (W,)
-    mean   = raman.mean(axis=0)                          # (W,)
-    std    = raman.std(axis=0, ddof=1)                   # (W,) sample std
+    q_lo = np.percentile(raman, p_lo, axis=0)  # (W,)
+    median = np.percentile(raman, p_mid, axis=0)  # (W,)
+    q_hi = np.percentile(raman, p_hi, axis=0)  # (W,)
+    mean = raman.mean(axis=0)  # (W,)
+    std = raman.std(axis=0, ddof=1)  # (W,) sample std
 
     N = len(raman)
     _BLUE = "#4477AA"
-    _REF  = "crimson"
+    _REF = "crimson"
 
     title_base = f"N={N}  |  p{p_lo:.0f}/p{p_mid:.0f}/p{p_hi:.0f}"
     if sample_id is not None:
@@ -1499,12 +1653,21 @@ def plot_raman_posterior(
     for trace in raman:
         ax_raw.plot(wavenumbers, trace, color=_BLUE, alpha=sample_alpha, linewidth=0.8)
     if ref is not None:
-        ax_raw.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
-                    label="Ground truth", zorder=7)
+        ax_raw.plot(
+            wavenumbers,
+            ref,
+            color=_REF,
+            linewidth=1.8,
+            linestyle="--",
+            label="Ground truth",
+            zorder=7,
+        )
         ax_raw.legend(fontsize=8)
     ax_raw.set_xlabel("Wavenumber (cm⁻¹)")
     ax_raw.set_ylabel("Intensity (counts/frame)")
-    ax_raw.set_title(f"Posterior samples — raw overlay (N={N}, α={sample_alpha})   |   {title_base}")
+    ax_raw.set_title(
+        f"Posterior samples — raw overlay (N={N}, α={sample_alpha})   |   {title_base}"
+    )
     ax_raw.grid(True, alpha=0.3)
     fig_raw.tight_layout()
 
@@ -1512,16 +1675,34 @@ def plot_raman_posterior(
     fig_overlay, ax_ov = plt.subplots(1, 1, figsize=figsize)
     for trace in raman:
         ax_ov.plot(wavenumbers, trace, color=_BLUE, alpha=sample_alpha, linewidth=0.8)
-    ax_ov.fill_between(wavenumbers, q_lo, q_hi,
-                       alpha=0.25, color=_BLUE,
-                       label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band")
+    ax_ov.fill_between(
+        wavenumbers,
+        q_lo,
+        q_hi,
+        alpha=0.25,
+        color=_BLUE,
+        label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band",
+    )
     # Draw median with a white outline for contrast against the dense background
-    ax_ov.plot(wavenumbers, median, color="white",  linewidth=2.5, zorder=5)
-    ax_ov.plot(wavenumbers, median, color=_BLUE,    linewidth=1.4, zorder=6,
-               label=f"Median (p{p_mid:.0f})")
+    ax_ov.plot(wavenumbers, median, color="white", linewidth=2.5, zorder=5)
+    ax_ov.plot(
+        wavenumbers,
+        median,
+        color=_BLUE,
+        linewidth=1.4,
+        zorder=6,
+        label=f"Median (p{p_mid:.0f})",
+    )
     if ref is not None:
-        ax_ov.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
-                   label="Ground truth", zorder=7)
+        ax_ov.plot(
+            wavenumbers,
+            ref,
+            color=_REF,
+            linewidth=1.8,
+            linestyle="--",
+            label="Ground truth",
+            zorder=7,
+        )
     ax_ov.set_xlabel("Wavenumber (cm⁻¹)")
     ax_ov.set_ylabel("Intensity (counts/frame)")
     ax_ov.set_title(f"Posterior samples (N={N}, α={sample_alpha})   |   {title_base}")
@@ -1531,17 +1712,34 @@ def plot_raman_posterior(
 
     # ── Figure 2: mean ± n_sigma·std tube ────────────────────────────────────
     fig_tube, ax_tb = plt.subplots(1, 1, figsize=figsize)
-    ax_tb.fill_between(wavenumbers,
-                       mean - n_sigma * std,
-                       mean + n_sigma * std,
-                       alpha=0.35, color=_BLUE,
-                       label=f"Mean ± {n_sigma:.0f}σ  (std range [{std.min():.3f}, {std.max():.3f}])")
-    ax_tb.plot(wavenumbers, mean,   color=_BLUE,       linewidth=2.0, label="Posterior mean")
-    ax_tb.plot(wavenumbers, median, color="darkorange", linewidth=1.5, linestyle="-.",
-               label=f"Median (p{p_mid:.0f})", zorder=5)
+    ax_tb.fill_between(
+        wavenumbers,
+        mean - n_sigma * std,
+        mean + n_sigma * std,
+        alpha=0.35,
+        color=_BLUE,
+        label=f"Mean ± {n_sigma:.0f}σ  (std range [{std.min():.3f}, {std.max():.3f}])",
+    )
+    ax_tb.plot(wavenumbers, mean, color=_BLUE, linewidth=2.0, label="Posterior mean")
+    ax_tb.plot(
+        wavenumbers,
+        median,
+        color="darkorange",
+        linewidth=1.5,
+        linestyle="-.",
+        label=f"Median (p{p_mid:.0f})",
+        zorder=5,
+    )
     if ref is not None:
-        ax_tb.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
-                   label="Ground truth", zorder=6)
+        ax_tb.plot(
+            wavenumbers,
+            ref,
+            color=_REF,
+            linewidth=1.8,
+            linestyle="--",
+            label="Ground truth",
+            zorder=6,
+        )
     ax_tb.set_xlabel("Wavenumber (cm⁻¹)")
     ax_tb.set_ylabel("Intensity (counts/frame)")
     ax_tb.set_title(f"Posterior mean ± {n_sigma:.0f}σ   |   {title_base}")
