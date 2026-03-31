@@ -491,19 +491,19 @@ class SpectralData:
 
 
 def convert_to_spectral_data(
-        data: Union[
-            SpectralData,
-            "rp.SpectralContainer",
-            "xr.DataArray",
-            "xr.Dataset",
-            np.ndarray,
-            Dict,
-            Tuple,
-        ],
-        wavenumbers: Optional[np.ndarray] = None,
-        intensity_var: str = "intensity_raw",
-        wavenumber_var: str = "wavenumber",
-        label: Optional[str] = None,
+    data: Union[
+        SpectralData,
+        "rp.SpectralContainer",
+        "xr.DataArray",
+        "xr.Dataset",
+        np.ndarray,
+        Dict,
+        Tuple,
+    ],
+    wavenumbers: Optional[np.ndarray] = None,
+    intensity_var: str = "intensity_raw",
+    wavenumber_var: str = "wavenumber",
+    label: Optional[str] = None,
 ) -> SpectralData:
     """
     Convert various input formats to unified SpectralData.
@@ -591,8 +591,34 @@ def convert_to_spectral_data(
         if wavenumber_var not in data.coords:
             raise ValueError(f"xarray.Dataset must have '{wavenumber_var}' coordinate")
 
+        intensity_da = data[intensity_var]
+
+        # Drop singleton dimensions that are not the wavenumber axis.
+        # Squeezing the whole dataset is unsafe: it can collapse a genuine
+        # single-sample dimension, turning [1, W] into [W] and losing the
+        # sample axis. We only remove dims we know are irrelevant extras
+        # (e.g. integration_time=1 from load_biomolecule_raman).
+        singleton_dims = [
+            d for d in intensity_da.dims
+            if d != wavenumber_var and intensity_da.sizes[d] == 1
+        ]
+        if singleton_dims:
+            intensity_da = intensity_da.squeeze(dim=singleton_dims, drop=True)
+
+        intensities = intensity_da.values
+        # Guarantee 2-D [N, W]: if only the wavenumber dim survives, add a sample axis.
+        if intensities.ndim == 1:
+            intensities = intensities[np.newaxis, :]
+        elif intensities.ndim > 2:
+            raise ValueError(
+                f"intensity variable '{intensity_var}' has shape {intensities.shape} "
+                f"after dropping singleton dims {singleton_dims}. "
+                "Expected [n_samples, n_wavenumbers]. "
+                "Explicitly select the desired slice before converting."
+            )
+
         return SpectralData(
-            intensities=data[intensity_var].values,
+            intensities=intensities,
             wavenumbers=data.coords[wavenumber_var].values,
             label=label or intensity_var,
         )
@@ -614,6 +640,7 @@ def convert_to_spectral_data(
         )
 
     raise TypeError(f"Unsupported input type: {type(data)}")
+
 
 # def compare_encoding_methods(
 #     wavenumbers: np.ndarray, d_model: int = 6, figsize: Tuple[int, int] = (14, 10)

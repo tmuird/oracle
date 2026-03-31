@@ -486,19 +486,22 @@ def visualise_decomposition(
                     f"r={corr_val:.4f},  λ err={rate_err_pct:.1f}%"
                 )
 
-        # Sorted rate errors (naive, for completeness)
+        # Sorted rate errors (naive, for completeness).
+        # When model capacity != n_gt, compare the top-n_compare components
+        # by abundance on the predicted side vs the n_compare largest GT rates.
         n_gt = len(reference_rates)
         n_pred = len(decomposition.rates)
-        if n_pred != n_gt:
-            top_idx = np.argsort(decomposition.abundances)[-n_gt:]
-            rates_est_sorted = np.sort(decomposition.rates[top_idx])
-        else:
-            rates_est_sorted = np.sort(decomposition.rates)
-        rates_gt_sorted = np.sort(reference_rates)
+        n_compare = min(n_pred, n_gt)
+        top_idx = np.argsort(decomposition.abundances)[-n_compare:]
+        rates_est_sorted = np.sort(decomposition.rates[top_idx])
+        rates_gt_sorted = np.sort(reference_rates)[-n_compare:]
         rate_errors_pct = (
             100.0 * np.abs(rates_est_sorted - rates_gt_sorted) / rates_gt_sorted
         )
-        print(f"\nRate errors % (sorted, naive 1-to-1): {np.round(rate_errors_pct, 1)}")
+        print(
+            f"\nRate errors % (sorted, naive 1-to-1, top {n_compare} of "
+            f"pred={n_pred}/gt={n_gt}): {np.round(rate_errors_pct, 1)}"
+        )
 
     return fig, axes
 

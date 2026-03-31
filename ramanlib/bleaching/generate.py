@@ -170,10 +170,7 @@ class SyntheticBleachingDataset:
         print(f"Bleaching time points: {self.bleaching_times}")
 
         # Both simulate_raman=True (ramanspy) and simulate_raman=False (real ATCC)
-        # use raman_xr as the source — the flag only controls which dataset was loaded
-        # in train.py. The wavenumber axis and raman spectra always come from raman_xr.
-        # ATCC data has an integration_time dimension; select the longest exposure.
-        # Synthetic data from ramanspy may not, in which case use it directly.
+        # use raman_xr as the source
         if "integration_time" in raman_xr.dims or "integration_time" in raman_xr.coords:
             latest_time = (
                 config.integration_times[-1] if config.integration_times else "15s"

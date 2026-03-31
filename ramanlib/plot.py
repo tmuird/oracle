@@ -140,15 +140,37 @@ def compare_spectra(
     if alphas is None:
         alphas = [0.7] * n_datasets
 
-    # Set default colours (use matplotlib default cycle if not provided)
+    # Set default colours (use matplotlib default cycle if not provided).
+    # Color strategy:
+    #   - Multiple datasets → one color per dataset (differentiates sources).
+    #   - Single dataset, multiple samples → one color per sample (differentiates samples).
+    #   - Explicit colours list of length n_samples when n_datasets==1 → per-sample.
+    prop_cycle = plt.rcParams['axes.prop_cycle']
+    default_colors = prop_cycle.by_key()['color']
+
+    _per_sample_colours = None  # set when cycling by sample rather than by dataset
+
     if colours is None:
-        prop_cycle = plt.rcParams['axes.prop_cycle']
-        default_colors = prop_cycle.by_key()['color']
-        colours = [default_colors[i % len(default_colors)] for i in range(n_datasets)]
+        if n_datasets == 1 and n_samples > 1:
+            _per_sample_colours = [
+                default_colors[i % len(default_colors)] for i in range(n_samples)
+            ]
+            colours = [default_colors[0]]  # fallback for dataset-level references
+        else:
+            colours = [default_colors[i % len(default_colors)] for i in range(n_datasets)]
+    elif n_datasets == 1 and len(colours) == n_samples:
+        # Caller explicitly supplied one color per sample for a single dataset
+        _per_sample_colours = colours
+        colours = [colours[0]]
     elif len(colours) != n_datasets:
         raise ValueError(
             f"Number of colours ({len(colours)}) must match number of datasets ({n_datasets})"
         )
+
+    def _colour(dataset_idx: int, sample_idx: int) -> str:
+        if _per_sample_colours is not None:
+            return _per_sample_colours[sample_idx % len(_per_sample_colours)]
+        return colours[dataset_idx]
 
     # Set default linewidths
     if linewidths is None:
@@ -181,7 +203,7 @@ def compare_spectra(
                 for dataset_idx, spec in enumerate(spectral_data):
                     wn, intensity = spec.get_spectrum(sample_idx)
                     label = spec.get_sample_label(sample_idx)
-                    ax.plot(wn, intensity, alpha=alphas[dataset_idx], label=label, color=colours[dataset_idx], linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
+                    ax.plot(wn, intensity, alpha=alphas[dataset_idx], label=label, color=_colour(dataset_idx, sample_idx), linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
 
                 if legend:
                     ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
@@ -203,7 +225,7 @@ def compare_spectra(
                 for sample_idx in range(n_samples):
                     wn, intensity = spec.get_spectrum(sample_idx)
                     label = spec.get_sample_label(sample_idx)
-                    ax.plot(wn, intensity, label=label, alpha=alphas[dataset_idx], color=colours[dataset_idx], linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
+                    ax.plot(wn, intensity, label=label, alpha=alphas[dataset_idx], color=_colour(dataset_idx, sample_idx), linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
 
                 if plot_mean:
                     # Compute mean (only if all samples share same axis)
@@ -238,7 +260,7 @@ def compare_spectra(
                     ax.grid(True, alpha=0.3)
 
                     wn, intensity = spec.get_spectrum(sample_idx)
-                    ax.plot(wn, intensity, alpha=alphas[dataset_idx], color=colours[dataset_idx], linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
+                    ax.plot(wn, intensity, alpha=alphas[dataset_idx], color=_colour(dataset_idx, sample_idx), linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
 
                 plt.tight_layout()
                 plt.show()
@@ -265,7 +287,7 @@ def compare_spectra(
                         intensity,
                         label=f"Sample {sample_idx}",
                         alpha=alphas[dataset_idx],
-                        color=colours[dataset_idx],
+                        color=_colour(dataset_idx, sample_idx),
                         linewidth=linewidths[dataset_idx],
                         linestyle=linestyles[dataset_idx],
                     )
