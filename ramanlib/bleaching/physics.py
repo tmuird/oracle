@@ -93,7 +93,7 @@ def l2_normalize(
     axis: int = -1,
     eps: float = 1e-8,
 ) -> np.ndarray:
-    """L2-normalize spectra along specified axis."""
+    """L2-normalise spectra along specified axis."""
     norm = np.linalg.norm(spectra, axis=axis, keepdims=True)
     return spectra / (norm + eps)
 
@@ -568,7 +568,7 @@ if TORCH_AVAILABLE:
         dim: int = -1,
         eps: float = 1e-8,
     ) -> "torch.Tensor":
-        """L2-normalize spectra (PyTorch version)."""
+        """L2-normalise spectra (PyTorch version)."""
         norm = torch.norm(spectra, p=2, dim=dim, keepdim=True)
         return spectra / (norm + eps)
 

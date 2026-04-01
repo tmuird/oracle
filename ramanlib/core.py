@@ -86,7 +86,7 @@ class SpectralData:
     --------
     >>> # Independent samples
     >>> data = SpectralData(intensities, wavenumbers, label='Fluorophores')
-    >>> processed = data.baseline_correction().normalize().crop(600, 1800)
+    >>> processed = data.baseline_correction().normalise().crop(600, 1800)
     >>>
     >>> # Time series (bleaching)
     >>> data = SpectralData(Y_data, wavenumbers, time_values=t_values, label='Bleaching')
@@ -428,12 +428,12 @@ class SpectralData:
         """
         Normalize spectra for visualization.
         This is specifically for making spectra visually comparable in plots,
-        not for analysis preprocessing. For preprocessing, use .normalize().
+        not for analysis preprocessing. For preprocessing, use .normalise().
 
         Parameters
         ----------
         method : str
-            'l2': Center and L2 normalize (good for comparing shapes)
+            'l2': Center and L2 normalise (good for comparing shapes)
             'zscore': Z-score normalization (mean=0, std=1)
             'minmax': Scale to [0, 1] range
             'center': Just center to mean=0
@@ -444,7 +444,7 @@ class SpectralData:
             Normalized data for plotting
         """
         if method == "l2":
-            # Center and L2 normalize - preserves shape, removes scale
+            # Center and L2 normalise - preserves shape, removes scale
             centered = self.intensities - np.mean(
                 self.intensities, axis=1, keepdims=True
             )
@@ -509,7 +509,7 @@ def convert_to_spectral_data(
     Convert various input formats to unified SpectralData.
 
     This function handles format conversion, NOT data normalization.
-    For normalization, use SpectralData.normalize() or .normalize_for_plotting().
+    For normalization, use SpectralData.normalise() or .normalize_for_plotting().
 
     Supports:
     - SpectralData (returns as-is or with updated label)
@@ -599,7 +599,8 @@ def convert_to_spectral_data(
         # sample axis. We only remove dims we know are irrelevant extras
         # (e.g. integration_time=1 from load_biomolecule_raman).
         singleton_dims = [
-            d for d in intensity_da.dims
+            d
+            for d in intensity_da.dims
             if d != wavenumber_var and intensity_da.sizes[d] == 1
         ]
         if singleton_dims:
@@ -672,17 +673,17 @@ def convert_to_spectral_data(
 #     n = len(wavenumbers)
 #     indices = np.arange(n)
 #     pe_index = wavenumber_positional_encoding(
-#         indices, d_model, scale=1.0, normalize=False
+#         indices, d_model, scale=1.0, normalise=False
 #     )
 
 #     # Wavenumber-based encoding (normalized)
 #     pe_wn_norm = wavenumber_positional_encoding(
-#         wavenumbers, d_model, scale=1.0, normalize=True
+#         wavenumbers, d_model, scale=1.0, normalise=True
 #     )
 
 #     # Wavenumber-based encoding (raw)
 #     pe_wn_raw = wavenumber_positional_encoding(
-#         wavenumbers, d_model, scale=1.0, normalize=False
+#         wavenumbers, d_model, scale=1.0, normalise=False
 #     )
 
 #     fig, axes = plt.subplots(d_model, 3, figsize=figsize, sharex="col")

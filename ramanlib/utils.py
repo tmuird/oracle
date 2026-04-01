@@ -33,7 +33,7 @@ def wavenumber_positional_encoding(
     scale : float
         Output scaling factor
     normalize : bool
-        If True, normalize wavenumbers to [0, 1] range before encoding.
+        If True, normalise wavenumbers to [0, 1] range before encoding.
         Recommended for typical positional encoding frequencies.
     global_range : tuple, optional
         (min, max) wavenumber range for normalization.
@@ -48,7 +48,7 @@ def wavenumber_positional_encoding(
     Examples
     --------
     >>> wn = np.linspace(400, 1800, 736)
-    >>> pe = wavenumber_positional_encoding(wn, d_model=6, normalize=True)
+    >>> pe = wavenumber_positional_encoding(wn, d_model=6, normalise=True)
     >>> print(pe.shape)
     (736, 6)
 
@@ -204,7 +204,9 @@ def add_positional_encoding(
             )
             # Use first sample's axis as representative
             wn = wn[0]
-        pe = wavenumber_positional_encoding(wn, d_model, scale, freq_scale, normalize, global_range)
+        pe = wavenumber_positional_encoding(
+            wn, d_model, scale, freq_scale, normalize, global_range
+        )
         pe_all = np.broadcast_to(pe[None, :, :], (n_samples, n_wavenumbers, d_model))
 
     # Concatenate intensity + PE

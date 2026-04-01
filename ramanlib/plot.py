@@ -71,7 +71,7 @@ def compare_spectra(
     --------
     # Compare SpectralData with preprocessing
     >>> raw = SpectralData(intensities, wavenumbers, label='Raw')
-    >>> processed = raw.baseline_correction().normalize().crop(600, 1800)
+    >>> processed = raw.baseline_correction().normalise().crop(600, 1800)
     >>> compare_spectra([raw, processed])
 
     # Convert from xarray and compare
@@ -145,8 +145,8 @@ def compare_spectra(
     #   - Multiple datasets → one color per dataset (differentiates sources).
     #   - Single dataset, multiple samples → one color per sample (differentiates samples).
     #   - Explicit colours list of length n_samples when n_datasets==1 → per-sample.
-    prop_cycle = plt.rcParams['axes.prop_cycle']
-    default_colors = prop_cycle.by_key()['color']
+    prop_cycle = plt.rcParams["axes.prop_cycle"]
+    default_colors = prop_cycle.by_key()["color"]
 
     _per_sample_colours = None  # set when cycling by sample rather than by dataset
 
@@ -157,7 +157,9 @@ def compare_spectra(
             ]
             colours = [default_colors[0]]  # fallback for dataset-level references
         else:
-            colours = [default_colors[i % len(default_colors)] for i in range(n_datasets)]
+            colours = [
+                default_colors[i % len(default_colors)] for i in range(n_datasets)
+            ]
     elif n_datasets == 1 and len(colours) == n_samples:
         # Caller explicitly supplied one color per sample for a single dataset
         _per_sample_colours = colours
@@ -182,7 +184,7 @@ def compare_spectra(
 
     # Set default linestyles
     if linestyles is None:
-        linestyles = ['-'] * n_datasets
+        linestyles = ["-"] * n_datasets
     elif len(linestyles) != n_datasets:
         raise ValueError(
             f"Number of linestyles ({len(linestyles)}) must match number of datasets ({n_datasets})"
@@ -203,7 +205,15 @@ def compare_spectra(
                 for dataset_idx, spec in enumerate(spectral_data):
                     wn, intensity = spec.get_spectrum(sample_idx)
                     label = spec.get_sample_label(sample_idx)
-                    ax.plot(wn, intensity, alpha=alphas[dataset_idx], label=label, color=_colour(dataset_idx, sample_idx), linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
+                    ax.plot(
+                        wn,
+                        intensity,
+                        alpha=alphas[dataset_idx],
+                        label=label,
+                        color=_colour(dataset_idx, sample_idx),
+                        linewidth=linewidths[dataset_idx],
+                        linestyle=linestyles[dataset_idx],
+                    )
 
                 if legend:
                     ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
@@ -225,7 +235,15 @@ def compare_spectra(
                 for sample_idx in range(n_samples):
                     wn, intensity = spec.get_spectrum(sample_idx)
                     label = spec.get_sample_label(sample_idx)
-                    ax.plot(wn, intensity, label=label, alpha=alphas[dataset_idx], color=_colour(dataset_idx, sample_idx), linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
+                    ax.plot(
+                        wn,
+                        intensity,
+                        label=label,
+                        alpha=alphas[dataset_idx],
+                        color=_colour(dataset_idx, sample_idx),
+                        linewidth=linewidths[dataset_idx],
+                        linestyle=linestyles[dataset_idx],
+                    )
 
                 if plot_mean:
                     # Compute mean (only if all samples share same axis)
@@ -260,7 +278,14 @@ def compare_spectra(
                     ax.grid(True, alpha=0.3)
 
                     wn, intensity = spec.get_spectrum(sample_idx)
-                    ax.plot(wn, intensity, alpha=alphas[dataset_idx], color=_colour(dataset_idx, sample_idx), linewidth=linewidths[dataset_idx], linestyle=linestyles[dataset_idx])
+                    ax.plot(
+                        wn,
+                        intensity,
+                        alpha=alphas[dataset_idx],
+                        color=_colour(dataset_idx, sample_idx),
+                        linewidth=linewidths[dataset_idx],
+                        linestyle=linestyles[dataset_idx],
+                    )
 
                 plt.tight_layout()
                 plt.show()
@@ -325,7 +350,7 @@ def visualize_positional_encoding(
     d_model : int
         Encoding dimension
     normalize : bool
-        Whether to normalize wavenumbers
+        Whether to normalise wavenumbers
     figsize : tuple
         Figure size
 
