@@ -96,6 +96,7 @@ def visualise_decomposition(
     figsize: Tuple[int, int] = (20, 10),
     n_train: Optional[int] = None,
     sample_id: Optional[str] = None,
+    dark_offset_adu: float = 0.0,
 ):
     """
     Visualize spectral decomposition results.
@@ -113,6 +114,11 @@ def visualise_decomposition(
         figsize: Figure size.
         n_train: Number of training frames — adds a cutoff line and shades regions.
         sample_id: Optional label shown in the suptitle.
+        dark_offset_adu: Global dark residual learned by the model (ADU).
+            Added to decomposition.reconstruction() so it matches the data scale.
+            For the last-frame Raman proxy, subtracted from Y[-1] so both sides
+            are in pure Raman space. Pass ensemble["dark_offset_adu"] from
+            sample_posterior(). Defaults to 0 (no correction).
 
     Returns:
         Tuple of (figure, axes)
@@ -147,7 +153,10 @@ def visualise_decomposition(
     # Multiply by frame_dur to convert to counts/frame, matching Y and reconstruction.
     raman_per_frame = raman * frame_dur
 
-    reconstruction = decomposition.reconstruction(time_values)
+    # decomposition.reconstruction() returns fluorescence + raman·Δt in ADU.
+    # dark_offset_adu is the global residual dark level not captured by the loader
+    # subtraction. Add it so the reconstruction sits on the same baseline as Y.
+    reconstruction = decomposition.reconstruction(time_values) + dark_offset_adu
 
     # Training cutoff time for vertical line — placed at the last *used* frame.
     if n_train is not None and time_values is not None and len(time_values) > 0:
@@ -158,12 +167,15 @@ def visualise_decomposition(
     # Reference Raman: if derived from Y it is already counts/frame; if provided
     # externally (e.g. GT from generate.py) it is counts/sec → scale by frame_dur.
     if reference_raman is None:
-        # Best available proxy: last frame of the observed data (most bleached).
-        # For synthetic data with many frames the last-frame approximation is fine;
-        # for real data with few frames it is the only sensible choice.
-        ref_raman_per_frame = Y[-1]
-        ref_raman_label = "Last frame (most bleached)"
-        print("No reference Raman provided — using last observed frame as proxy.")
+        # Best available proxy: last observed frame (most bleached).
+        # Y contains dark_offset_adu as a constant baseline; subtract it so
+        # the reference sits in pure Raman space (matching raman_per_frame).
+        ref_raman_per_frame = Y[-1] - dark_offset_adu
+        ref_raman_label = "Last frame − dark residual" if dark_offset_adu != 0.0 else "Last frame (most bleached)"
+        msg = "No reference Raman provided — using last observed frame as proxy."
+        if dark_offset_adu != 0.0:
+            msg += f"  Dark residual corrected: {dark_offset_adu:+.2f} ADU."
+        print(msg)
     else:
         ref_raman_per_frame = reference_raman * frame_dur  # counts/sec → counts/frame
         ref_raman_label = "Ground Truth Raman"
@@ -1592,6 +1604,7 @@ def plot_raman_posterior(
     sample_alpha: float = 0.15,
     figsize: Tuple[int, int] = (8, 5),
     sample_id: Optional[str] = None,
+    dark_offset_adu: Optional[float] = None,
 ) -> Tuple[Figure, Figure, Figure]:
     """
     Three separate figures summarising the Raman posterior over N stochastic draws.
@@ -1624,7 +1637,15 @@ def plot_raman_posterior(
         Half-width multiplier for the std tube in fig_tube.
     sample_alpha : float
         Per-trace opacity. 200 traces at 0.15 gives good density impression.
+    dark_offset_adu : float, optional
+        Global dark residual from ensemble["dark_offset_adu"]. When provided,
+        a horizontal dashed line is drawn at this level on each figure so the
+        scale of the correction is visible relative to the Raman signal.
     """
+    # Resolve dark_offset_adu from ensemble if not explicitly given
+    if dark_offset_adu is None:
+        dark_offset_adu = ensemble.get("dark_offset_adu", 0.0)
+
     raman = ensemble["raman"] * frame_duration   # [N, W] counts/frame
     ref = reference_raman * frame_duration if reference_raman is not None else None
 
@@ -1647,6 +1668,10 @@ def plot_raman_posterior(
         if ref is not None:
             ax.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
                     label="Ground truth", zorder=7)
+        if dark_offset_adu != 0.0:
+            ax.axhline(dark_offset_adu, color="#888888", linewidth=1.0,
+                       linestyle=":", label=f"Dark residual ({dark_offset_adu:+.1f} ADU)",
+                       zorder=6)
 
     def _axis_labels(ax):
         ax.set_xlabel("Wavenumber (cm⁻¹)")
