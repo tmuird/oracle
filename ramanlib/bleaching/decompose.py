@@ -21,21 +21,28 @@ from ramanlib.bleaching.physics import (
 
 @dataclass
 class DecompositionResult:
-    """Container for decomposition results."""
+    """Container for decomposition results.
 
-    raman: SpectralData  # (n_wavenumbers,)
-    rates: np.ndarray  # (n_fluorophores,)
-    # (n_fluorophores,)
-    physics_model: str
+    Required fields (both classical and VAE paths):
+        raman, rates, fluorophore_spectra
+
+    VAE-path fields:
+        abundances, physics_model, frame_duration
+
+    Classical-only fields:
+        mse, log_polynomial_coeffs, poly_wn_min, poly_wn_max
+    """
+
+    raman: SpectralData             # (n_wavenumbers,)
+    rates: np.ndarray               # (n_fluorophores,)
     fluorophore_spectra: SpectralData  # (n_fluorophores, n_wavenumbers)
-    abundances: Optional[np.ndarray] = None  # (n_fluorophores,) if needed
+    abundances: Optional[np.ndarray] = None   # (n_fluorophores,)
+    physics_model: Optional[str] = None       # e.g. "integrated", "factored"
+    frame_duration: Optional[float] = None    # CCD integration time per frame (s)
     mse: float = 0.0
-    log_polynomial_coeffs: Optional[np.ndarray] = (
-        None  # (n_fluorophores, degree+1) if polynomial bases used
-    )
-    poly_wn_min: Optional[float] = None  # Wavenumber min for polynomial normalization
-    poly_wn_max: Optional[float] = None  # Wavenumber max for polynomial normalization
-    frame_duration: Optional[float] = None  # CCD integration time per frame
+    log_polynomial_coeffs: Optional[np.ndarray] = None  # (n_fluorophores, degree+1)
+    poly_wn_min: Optional[float] = None  # Wavenumber min for polynomial normalisation
+    poly_wn_max: Optional[float] = None  # Wavenumber max for polynomial normalisation
 
     @property
     def time_constants(self) -> np.ndarray:
@@ -43,7 +50,11 @@ class DecompositionResult:
         return 1.0 / self.rates
 
     def reconstruction(self, time_points: np.ndarray) -> np.ndarray:
-        """Reconstruct Y(t, ν) from decomposition parameters."""
+        """Reconstruct Y(t, ν) from decomposition parameters.
+
+        Falls back to physics_model="integrated" when not set (classical path).
+        """
+        physics_model = self.physics_model if self.physics_model is not None else "integrated"
         return reconstruct_time_series_numpy(
             raman=self.raman.intensities,
             bases=self.fluorophore_spectra.intensities,
@@ -51,7 +62,7 @@ class DecompositionResult:
             decay_rates=self.rates,
             time_values=time_points,
             frame_duration=self.frame_duration,
-            physics_model=self.physics_model
+            physics_model=physics_model,
         )
 
 
@@ -387,7 +398,7 @@ def decompose(
 
         def solve_given_rates(rates):
             poly_result = solve_spectra_with_polynomial_bases(
-                spectral_data, t, rates, polynomial_degree
+                spectral_data, rates, polynomial_degree
             )
             decay = np.exp(-rates[:, None] * t[None, :])
             Y_recon = (

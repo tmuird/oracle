@@ -86,8 +86,8 @@ from ramanlib.bleaching.decompose import DecompositionResult
 
 def visualise_decomposition(
     data: SpectralData,
-    data_clean: SpectralData,
     decomposition: DecompositionResult,
+    data_clean: Optional[SpectralData] = None,
     reference_raman: Optional[np.ndarray] = None,
     reference_bases: Optional[np.ndarray] = None,
     reference_rates: Optional[np.ndarray] = None,
@@ -103,7 +103,7 @@ def visualise_decomposition(
     Args:
         data: Original time series as SpectralData (must have time_values set).
         data_clean: Cleaned time series as SpectralData (must have time_values set).
-        decomposition: DecompositionResult from predict_from_early.
+        decomposition: DecompositionResult from predict.
             physics_model and frame_duration are read from decomposition automatically.
         reference_raman: GT Raman spectrum for comparison. If None, uses last 20 frames avg.
         reference_bases: GT fluorophore basis spectra [n_gt, n_wavenumbers].
@@ -126,7 +126,7 @@ def visualise_decomposition(
 
     raman = decomposition.raman.intensities
     Y = data.intensities
-    Y_clean = data_clean.intensities
+    Y_clean = data_clean.intensities if data_clean is not None else None
     n_t, n_wn = Y.shape
     time_values = data.time_values
     bases = decomposition.fluorophore_spectra.intensities
@@ -158,9 +158,12 @@ def visualise_decomposition(
     # Reference Raman: if derived from Y it is already counts/frame; if provided
     # externally (e.g. GT from generate.py) it is counts/sec → scale by frame_dur.
     if reference_raman is None:
-        ref_raman_per_frame = Y[-20:].mean(axis=0)  # counts/frame, no scaling needed
-        ref_raman_label = "Reference (last 20 frames avg)"
-        print("Using last 20 frames average as reference Raman.")
+        # Best available proxy: last frame of the observed data (most bleached).
+        # For synthetic data with many frames the last-frame approximation is fine;
+        # for real data with few frames it is the only sensible choice.
+        ref_raman_per_frame = Y[-1]
+        ref_raman_label = "Last frame (most bleached)"
+        print("No reference Raman provided — using last observed frame as proxy.")
     else:
         ref_raman_per_frame = reference_raman * frame_dur  # counts/sec → counts/frame
         ref_raman_label = "Ground Truth Raman"
@@ -385,37 +388,20 @@ def visualise_decomposition(
 
     # ── Plot 5: First Frame Reconstruction ───────────────────────────────────
     ax = axes[1, 1]
-    ax.plot(
-        wavenumbers,
-        Y[0],
-        "r--",
-        linewidth=1.5,
-        alpha=0.6,
-        label="Original (t=0)",
-    )
-    ax.plot(
-        wavenumbers,
-        Y_clean[0],
-        "g--",
-        linewidth=1.5,
-        alpha=0.8,
-        label="Clean Original (t=0)",
-    )
-    ax.plot(
-        wavenumbers,
-        reconstruction[0],
-        color=_COLORS[0],
-        linewidth=1.5,
-        alpha=1,
-        label="Reconstructed (t=0)",
-    )
+    ax.plot(wavenumbers, Y[0], "r--", linewidth=1.5, alpha=0.6, label="Observed (t=0)")
+    if Y_clean is not None:
+        ax.plot(wavenumbers, Y_clean[0], "g--", linewidth=1.5, alpha=0.8,
+                label="Clean (t=0)")
+    ax.plot(wavenumbers, reconstruction[0], color=_COLORS[0], linewidth=1.5,
+            label="Reconstructed (t=0)")
     t0_mse = float(np.mean((Y[0] - reconstruction[0]) ** 2))
-    t0_mse_clean = float(np.mean((Y_clean[0] - reconstruction[0]) ** 2))
+    title_mse = f"Reconstruction (t=0)  MSE={t0_mse:.2f}"
+    if Y_clean is not None:
+        t0_mse_clean = float(np.mean((Y_clean[0] - reconstruction[0]) ** 2))
+        title_mse += f"  MSE Clean={t0_mse_clean:.2f}"
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity (counts/frame)")
-    ax.set_title(
-        f"Reconstruction (t=0)  MSE={t0_mse:.2f}  MSE Clean={t0_mse_clean:.2f}"
-    )
+    ax.set_title(title_mse)
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -508,9 +494,9 @@ def visualise_decomposition(
 
 def plot_parameter_detail(
     decomposition: DecompositionResult,
-    reference_bases: np.ndarray,
-    reference_rates: np.ndarray,
-    reference_abundances: np.ndarray,
+    reference_bases: Optional[np.ndarray] = None,
+    reference_rates: Optional[np.ndarray] = None,
+    reference_abundances: Optional[np.ndarray] = None,
     n_train: Optional[int] = None,
     sample_id: Optional[str] = None,
 ):
@@ -529,11 +515,16 @@ def plot_parameter_detail(
     """
     _COLORS = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
+    has_reference = (
+        reference_bases is not None
+        and reference_rates is not None
+        and reference_abundances is not None
+    )
     bases = decomposition.fluorophore_spectra.intensities
     abundances = decomposition.abundances
     rates = decomposition.rates
     n_fluorophores = len(rates)
-    n_ref = len(reference_rates)
+    n_ref = len(reference_rates) if has_reference else 0
 
     # Wavenumbers: prefer fluorophore_spectra axis, fall back to raman axis
     wavenumbers = decomposition.fluorophore_spectra.wavenumbers
@@ -548,35 +539,33 @@ def plot_parameter_detail(
     if sample_id is not None:
         parts.append(f"Sample: {sample_id}")
     parts.append(f"n_bases={n_fluorophores}")
-    parts.append(f"n_gt={n_ref}")
+    if has_reference:
+        parts.append(f"n_gt={n_ref}")
     parts.append(f"physics={physics_model}")
     if n_train is not None:
         parts.append(f"n_train={n_train}")
     info_str = "   |   ".join(parts)
 
-    # ── Greedy matching by basis correlation ─────────────────────────────────
-    corr_matrix = np.zeros((n_fluorophores, n_ref))
-    for i in range(n_fluorophores):
-        for j in range(n_ref):
-            c = np.corrcoef(bases[i], reference_bases[j])[0, 1]
-            corr_matrix[i, j] = c if np.isfinite(c) else 0.0
-    pred_to_ref: Dict[int, Tuple] = {}
-    used_refs: set = set()
-    for p in np.argsort(-corr_matrix.max(axis=1)):
-        available = [(j, corr_matrix[p, j]) for j in range(n_ref) if j not in used_refs]
-        if available:
-            best_j, best_c = max(available, key=lambda x: x[1])
-            pred_to_ref[p] = (best_j, float(best_c))
-            used_refs.add(best_j)
-        else:
-            pred_to_ref[p] = (None, 0.0)
+    # ── Greedy matching by basis correlation (only when GT available) ─────────
+    pred_to_ref: Dict[int, Tuple] = {i: (None, 0.0) for i in range(n_fluorophores)}
+    corr_matrix = np.zeros((n_fluorophores, max(n_ref, 1)))
+    if has_reference:
+        corr_matrix = np.zeros((n_fluorophores, n_ref))
+        for i in range(n_fluorophores):
+            for j in range(n_ref):
+                c = np.corrcoef(bases[i], reference_bases[j])[0, 1]
+                corr_matrix[i, j] = c if np.isfinite(c) else 0.0
+        used_refs: set = set()
+        for p in np.argsort(-corr_matrix.max(axis=1)):
+            available = [(j, corr_matrix[p, j]) for j in range(n_ref) if j not in used_refs]
+            if available:
+                best_j, best_c = max(available, key=lambda x: x[1])
+                pred_to_ref[p] = (best_j, float(best_c))
+                used_refs.add(best_j)
 
     pred_colors = [
-        (
-            _COLORS[pred_to_ref[i][0] % len(_COLORS)]
-            if pred_to_ref[i][0] is not None
-            else "#888888"
-        )
+        _COLORS[pred_to_ref[i][0] % len(_COLORS)] if pred_to_ref[i][0] is not None
+        else _COLORS[i % len(_COLORS)]
         for i in range(n_fluorophores)
     ]
     ref_colors = [_COLORS[j % len(_COLORS)] for j in range(n_ref)]
@@ -584,66 +573,76 @@ def plot_parameter_detail(
     # ── Figure 1: Correlation heatmap + Rate scatter + Abundance scatter ─────
     fig_scatter, (ax_corr, ax_r, ax_a) = plt.subplots(1, 3, figsize=(15, 5))
 
-    # Correlation heatmap
-    im = ax_corr.imshow(corr_matrix, vmin=-1, vmax=1, cmap="RdBu", aspect="auto")
-    ax_corr.set_xticks(range(n_ref))
-    ax_corr.set_yticks(range(n_fluorophores))
-    ax_corr.set_xticklabels(
-        [f"GT B{j+1}" for j in range(n_ref)], rotation=45, ha="right", fontsize=9
-    )
-    ax_corr.set_yticklabels([f"Pred B{i+1}" for i in range(n_fluorophores)], fontsize=9)
-    for i in range(n_fluorophores):
-        for j in range(n_ref):
-            text_color = "white" if abs(corr_matrix[i, j]) > 0.6 else "black"
-            ax_corr.text(
-                j,
-                i,
-                f"{corr_matrix[i, j]:.2f}",
-                ha="center",
-                va="center",
-                fontsize=9,
-                color=text_color,
-            )
-    plt.colorbar(im, ax=ax_corr, shrink=0.8, label="Pearson r")
-    ax_corr.set_title("Basis Correlation")
-    ax_corr.set_xlabel("GT Bases")
-    ax_corr.set_ylabel("Predicted Bases")
+    if has_reference:
+        im = ax_corr.imshow(corr_matrix, vmin=-1, vmax=1, cmap="RdBu", aspect="auto")
+        ax_corr.set_xticks(range(n_ref))
+        ax_corr.set_yticks(range(n_fluorophores))
+        ax_corr.set_xticklabels(
+            [f"GT B{j+1}" for j in range(n_ref)], rotation=45, ha="right", fontsize=9
+        )
+        ax_corr.set_yticklabels([f"Pred B{i+1}" for i in range(n_fluorophores)], fontsize=9)
+        for i in range(n_fluorophores):
+            for j in range(n_ref):
+                text_color = "white" if abs(corr_matrix[i, j]) > 0.6 else "black"
+                ax_corr.text(j, i, f"{corr_matrix[i, j]:.2f}",
+                             ha="center", va="center", fontsize=9, color=text_color)
+        plt.colorbar(im, ax=ax_corr, shrink=0.8, label="Pearson r")
+        ax_corr.set_title("Basis Correlation (Pred vs GT)")
+        ax_corr.set_xlabel("GT Bases")
+        ax_corr.set_ylabel("Predicted Bases")
+    else:
+        ax_corr.bar(range(n_fluorophores), rates, color=pred_colors, edgecolor="k", linewidth=0.5)
+        ax_corr.set_xticks(range(n_fluorophores))
+        ax_corr.set_xticklabels([f"B{i+1}" for i in range(n_fluorophores)], fontsize=9)
+        ax_corr.set_xlabel("Component")
+        ax_corr.set_ylabel("Decay rate λ (s⁻¹)")
+        ax_corr.set_title("Predicted Decay Rates")
+        ax_corr.grid(True, alpha=0.3, axis="y")
 
-    # Matched pairs for scatter plots
-    pred_r, gt_r, pred_a, gt_a, pair_cols, pair_labels = [], [], [], [], [], []
-    for p in range(n_fluorophores):
-        ref_j, _ = pred_to_ref[p]
-        if ref_j is not None:
-            pred_r.append(rates[p])
-            gt_r.append(reference_rates[ref_j])
-            pred_a.append(float(abundances[p]))
-            gt_a.append(float(reference_abundances[ref_j]))
-            pair_cols.append(pred_colors[p])
-            pair_labels.append(f"B{p+1}→GT{ref_j+1}")
-
-    for ax, xs, ys, xlabel, ylabel, title in [
-        (ax_r, gt_r, pred_r, "GT λ (s⁻¹)", "Predicted λ (s⁻¹)", "Decay Rate"),
-        (ax_a, gt_a, pred_a, "GT abundance w", "Predicted abundance w", "Abundance"),
-    ]:
-        if xs:
-            for x, y, c, lbl in zip(xs, ys, pair_cols, pair_labels):
-                ax.scatter(
-                    x, y, color=c, s=110, zorder=5, edgecolors="k", linewidths=0.5
-                )
-                ax.annotate(
-                    lbl, (x, y), textcoords="offset points", xytext=(5, 4), fontsize=7
-                )
-            lo = 0.0
-            hi = float(max(max(xs), max(ys))) * 1.2
-            ax.plot([lo, hi], [lo, hi], "k--", linewidth=1, alpha=0.5, label="1:1")
-            ax.set_xlim(lo, hi)
-            ax.set_ylim(lo, hi)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(f"{title} Comparison")
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-        ax.set_aspect("equal", adjustable="box")
+    if has_reference:
+        pred_r, gt_r, pred_a, gt_a, pair_cols, pair_labels = [], [], [], [], [], []
+        for p in range(n_fluorophores):
+            ref_j, _ = pred_to_ref[p]
+            if ref_j is not None:
+                pred_r.append(rates[p])
+                gt_r.append(reference_rates[ref_j])
+                pred_a.append(float(abundances[p]))
+                gt_a.append(float(reference_abundances[ref_j]))
+                pair_cols.append(pred_colors[p])
+                pair_labels.append(f"B{p+1}→GT{ref_j+1}")
+        for ax, xs, ys, xlabel, ylabel, title in [
+            (ax_r, gt_r, pred_r, "GT λ (s⁻¹)", "Predicted λ (s⁻¹)", "Decay Rate"),
+            (ax_a, gt_a, pred_a, "GT abundance w", "Predicted abundance w", "Abundance"),
+        ]:
+            if xs:
+                for x, y, c, lbl in zip(xs, ys, pair_cols, pair_labels):
+                    ax.scatter(x, y, color=c, s=110, zorder=5, edgecolors="k", linewidths=0.5)
+                    ax.annotate(lbl, (x, y), textcoords="offset points", xytext=(5, 4), fontsize=7)
+                lo, hi = 0.0, float(max(max(xs), max(ys))) * 1.2
+                ax.plot([lo, hi], [lo, hi], "k--", linewidth=1, alpha=0.5, label="1:1")
+                ax.set_xlim(lo, hi)
+                ax.set_ylim(lo, hi)
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.set_title(f"{title} Comparison")
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            ax.set_aspect("equal", adjustable="box")
+    else:
+        ax_r.bar(range(n_fluorophores), abundances, color=pred_colors, edgecolor="k", linewidth=0.5)
+        ax_r.set_xticks(range(n_fluorophores))
+        ax_r.set_xticklabels([f"B{i+1}" for i in range(n_fluorophores)], fontsize=9)
+        ax_r.set_xlabel("Component")
+        ax_r.set_ylabel("Abundance w")
+        ax_r.set_title("Predicted Abundances")
+        ax_r.grid(True, alpha=0.3, axis="y")
+        ax_a.bar(range(n_fluorophores), 1.0 / rates, color=pred_colors, edgecolor="k", linewidth=0.5)
+        ax_a.set_xticks(range(n_fluorophores))
+        ax_a.set_xticklabels([f"B{i+1}" for i in range(n_fluorophores)], fontsize=9)
+        ax_a.set_xlabel("Component")
+        ax_a.set_ylabel("Time constant τ (s)")
+        ax_a.set_title("Predicted Time Constants")
+        ax_a.grid(True, alpha=0.3, axis="y")
 
     if info_str:
         fig_scatter.suptitle(info_str, fontsize=9, y=1.02)
@@ -1406,7 +1405,7 @@ def plot_uncertainty(
     Visualise uncertainty across N stochastic VAE forward passes as heatmaps.
 
     Args:
-        ensemble:             Output of predict_ensemble() — dict with keys
+        ensemble:             Output of sample_posterior() — dict with keys
                               'raman' [N,W], 'rates' [N,F], 'abundances' [N,F],
                               'bases' [N,F,W], 'abundance_times_basis' [N,F,W],
                               'reconstruction' [N,T,W].
@@ -1595,159 +1594,112 @@ def plot_raman_posterior(
     sample_id: Optional[str] = None,
 ) -> Tuple[Figure, Figure, Figure]:
     """
-    Three separate posterior figures for N ensemble Raman predictions.
+    Three separate figures summarising the Raman posterior over N stochastic draws.
 
-    All figures work in counts/frame (ensemble['raman'] * frame_duration).
-
-    Figure 1 — raw sample overlay:
-        All N samples at ``sample_alpha``, GT overlaid. No summary statistics.
-
-    Figure 2 — annotated overlay:
-        Same traces plus [p_lo, p_hi] percentile band and median line.
-
-    Figure 3 — credible tube:
-        Posterior mean ± n_sigma·std shaded tube, with median and GT overlaid.
-
-    Parameters
-    ----------
-    ensemble : dict
-        Output of ``predict_ensemble()``. Key ``'raman'`` has shape [N, W] in counts/sec.
-    wavenumbers : (W,)
-    reference_raman : (W,) in counts/sec (GT from generate.py), optional.
-        Scaled internally by ``frame_duration`` to counts/frame.
-    frame_duration : float
-        Converts counts/sec → counts/frame.
-    percentiles : (p_lo, p_mid, p_hi)
-        Quantile levels; p_mid is the median line. Default (5, 50, 95).
-    n_sigma : float
-        Half-width of the std tube on the third figure (default 1).
-    sample_alpha : float
-        Per-trace opacity. 50 traces at 0.15 ≈ solid at peaks.
+    All values are in counts/frame (ensemble['raman'] * frame_duration).
 
     Returns
     -------
     fig_raw : Figure
-        Raw sample overlay (traces only).
+        N semi-transparent posterior traces. Shows full marginal distribution
+        without any summary statistic; useful for detecting multi-modality.
     fig_overlay : Figure
-        Annotated overlay with percentile band and median.
+        Same traces with the percentile band and posterior mean overlaid.
+        Lets you see how the summary statistics relate to the individual draws.
     fig_tube : Figure
-        Credible interval (mean ± n_sigma·std) tube.
+        Clean credible-tube summary: fill_between [p_lo, p_hi] band,
+        ±n_sigma·std tube, posterior mean, and median on one axis.
+
+    Parameters
+    ----------
+    ensemble : dict
+        Output of sample_posterior(). Key 'raman' [N, W] in counts/sec.
+    wavenumbers : (W,)
+    reference_raman : (W,) counts/sec, optional.
+    frame_duration : float
+        Converts counts/sec → counts/frame.
+    percentiles : (p_lo, p_mid, p_hi)
+        Band edges and median line. Default (5, 50, 95) = 90% credible interval.
+    n_sigma : float
+        Half-width multiplier for the std tube in fig_tube.
+    sample_alpha : float
+        Per-trace opacity. 200 traces at 0.15 gives good density impression.
     """
-    raman = ensemble["raman"] * frame_duration  # [N, W] counts/frame
+    raman = ensemble["raman"] * frame_duration   # [N, W] counts/frame
     ref = reference_raman * frame_duration if reference_raman is not None else None
 
     p_lo, p_mid, p_hi = percentiles
-    q_lo = np.percentile(raman, p_lo, axis=0)  # (W,)
-    median = np.percentile(raman, p_mid, axis=0)  # (W,)
-    q_hi = np.percentile(raman, p_hi, axis=0)  # (W,)
-    mean = raman.mean(axis=0)  # (W,)
-    std = raman.std(axis=0, ddof=1)  # (W,) sample std
+    q_lo  = np.percentile(raman, p_lo,  axis=0)   # (W,)
+    median = np.percentile(raman, p_mid, axis=0)   # (W,)
+    q_hi  = np.percentile(raman, p_hi,  axis=0)   # (W,)
+    mean  = raman.mean(axis=0)                      # (W,)
+    std   = raman.std(axis=0, ddof=1)               # (W,)
 
     N = len(raman)
     _BLUE = "#4477AA"
-    _REF = "crimson"
+    _REF  = "crimson"
 
     title_base = f"N={N}  |  p{p_lo:.0f}/p{p_mid:.0f}/p{p_hi:.0f}"
     if sample_id is not None:
-        title_base = f"Sample: {sample_id}   |   {title_base}"
+        title_base = f"Sample {sample_id}  |  {title_base}"
 
-    # ── Figure 1: raw traces only ─────────────────────────────────────────────
-    fig_raw, ax_raw = plt.subplots(1, 1, figsize=figsize)
+    def _ref_line(ax):
+        if ref is not None:
+            ax.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
+                    label="Ground truth", zorder=7)
+
+    def _axis_labels(ax):
+        ax.set_xlabel("Wavenumber (cm⁻¹)")
+        ax.set_ylabel("Intensity (counts/frame)")
+        ax.grid(True, alpha=0.3)
+
+    # ── Fig 1: raw draws ──────────────────────────────────────────────────────
+    fig_raw, ax = plt.subplots(figsize=figsize)
     for trace in raman:
-        ax_raw.plot(wavenumbers, trace, color=_BLUE, alpha=sample_alpha, linewidth=0.8)
+        ax.plot(wavenumbers, trace, color=_BLUE, alpha=sample_alpha, linewidth=0.8)
+    _ref_line(ax)
+    _axis_labels(ax)
+    ax.set_title(f"Posterior draws  |  {title_base}")
     if ref is not None:
-        ax_raw.plot(
-            wavenumbers,
-            ref,
-            color=_REF,
-            linewidth=1.8,
-            linestyle="--",
-            label="Ground truth",
-            zorder=7,
-        )
-        ax_raw.legend(fontsize=8)
-    ax_raw.set_xlabel("Wavenumber (cm⁻¹)")
-    ax_raw.set_ylabel("Intensity (counts/frame)")
-    ax_raw.set_title(
-        f"Posterior samples — raw overlay (N={N}, α={sample_alpha})   |   {title_base}"
-    )
-    ax_raw.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
     fig_raw.tight_layout()
 
-    # ── Figure 2: annotated overlay ───────────────────────────────────────────
-    fig_overlay, ax_ov = plt.subplots(1, 1, figsize=figsize)
+    # ── Fig 2: draws + band overlay ───────────────────────────────────────────
+    fig_overlay, ax = plt.subplots(figsize=figsize)
     for trace in raman:
-        ax_ov.plot(wavenumbers, trace, color=_BLUE, alpha=sample_alpha, linewidth=0.8)
-    ax_ov.fill_between(
-        wavenumbers,
-        q_lo,
-        q_hi,
-        alpha=0.25,
-        color=_BLUE,
-        label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band",
-    )
-    # Draw median with a white outline for contrast against the dense background
-    ax_ov.plot(wavenumbers, median, color="white", linewidth=2.5, zorder=5)
-    ax_ov.plot(
-        wavenumbers,
-        median,
-        color=_BLUE,
-        linewidth=1.4,
-        zorder=6,
-        label=f"Median (p{p_mid:.0f})",
-    )
-    if ref is not None:
-        ax_ov.plot(
-            wavenumbers,
-            ref,
-            color=_REF,
-            linewidth=1.8,
-            linestyle="--",
-            label="Ground truth",
-            zorder=7,
-        )
-    ax_ov.set_xlabel("Wavenumber (cm⁻¹)")
-    ax_ov.set_ylabel("Intensity (counts/frame)")
-    ax_ov.set_title(f"Posterior samples (N={N}, α={sample_alpha})   |   {title_base}")
-    ax_ov.legend(fontsize=8)
-    ax_ov.grid(True, alpha=0.3)
+        ax.plot(wavenumbers, trace, color=_BLUE, alpha=sample_alpha, linewidth=0.8)
+    ax.fill_between(wavenumbers, q_lo, q_hi, alpha=0.30, color=_BLUE,
+                    label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band")
+    ax.plot(wavenumbers, mean, color=_BLUE, linewidth=2.0, label="Posterior mean", zorder=6)
+    _ref_line(ax)
+    _axis_labels(ax)
+    ax.set_title(f"Draws + credible band  |  {title_base}")
+    ax.legend(fontsize=8)
     fig_overlay.tight_layout()
 
-    # ── Figure 2: mean ± n_sigma·std tube ────────────────────────────────────
-    fig_tube, ax_tb = plt.subplots(1, 1, figsize=figsize)
-    ax_tb.fill_between(
-        wavenumbers,
-        mean - n_sigma * std,
-        mean + n_sigma * std,
-        alpha=0.35,
-        color=_BLUE,
-        label=f"Mean ± {n_sigma:.0f}σ  (std range [{std.min():.3f}, {std.max():.3f}])",
-    )
-    ax_tb.plot(wavenumbers, mean, color=_BLUE, linewidth=2.0, label="Posterior mean")
-    ax_tb.plot(
-        wavenumbers,
-        median,
-        color="darkorange",
-        linewidth=1.5,
-        linestyle="-.",
-        label=f"Median (p{p_mid:.0f})",
-        zorder=5,
-    )
-    if ref is not None:
-        ax_tb.plot(
-            wavenumbers,
-            ref,
-            color=_REF,
-            linewidth=1.8,
-            linestyle="--",
-            label="Ground truth",
-            zorder=6,
-        )
-    ax_tb.set_xlabel("Wavenumber (cm⁻¹)")
-    ax_tb.set_ylabel("Intensity (counts/frame)")
-    ax_tb.set_title(f"Posterior mean ± {n_sigma:.0f}σ   |   {title_base}")
-    ax_tb.legend(fontsize=8)
-    ax_tb.grid(True, alpha=0.3)
+    # ── Fig 3: clean credible tube ────────────────────────────────────────────
+    fig_tube, ax = plt.subplots(figsize=figsize)
+    ax.fill_between(wavenumbers, q_lo, q_hi, alpha=0.20, color=_BLUE,
+                    label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band")
+    ax.fill_between(wavenumbers, mean - n_sigma * std, mean + n_sigma * std,
+                    alpha=0.35, color=_BLUE, label=f"Mean ± {n_sigma:.0f}σ")
+    ax.plot(wavenumbers, mean,   color=_BLUE,        linewidth=2.0, label="Posterior mean")
+    ax.plot(wavenumbers, median, color="darkorange",  linewidth=1.5, linestyle="-.",
+            label=f"Median (p{p_mid:.0f})", zorder=5)
+    _ref_line(ax)
+    _axis_labels(ax)
+    ax.set_title(f"Credible tube  |  {title_base}")
+    ax.legend(fontsize=8)
     fig_tube.tight_layout()
+
+    # ── Posterior summary metrics ─────────────────────────────────────────────
+    print(f"\nRaman posterior (N={N}):")
+    print(f"  Std range:           [{std.min():.4f}, {std.max():.4f}]")
+    print(f"  Mean CV (std/mean):  {(std.mean() / (mean.mean() + 1e-12)):.4f}")
+    if ref is not None:
+        r = np.corrcoef(mean, ref)[0, 1]
+        rmse = np.sqrt(np.mean((mean - ref) ** 2))
+        print(f"  Pearson r (mean vs GT):  {r:.4f}")
+        print(f"  RMSE      (mean vs GT):  {rmse:.4f}")
 
     return fig_raw, fig_overlay, fig_tube
