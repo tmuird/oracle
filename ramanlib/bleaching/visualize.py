@@ -114,11 +114,11 @@ def visualise_decomposition(
         figsize: Figure size.
         n_train: Number of training frames — adds a cutoff line and shades regions.
         sample_id: Optional label shown in the suptitle.
-        dark_offset_adu: Global dark residual learned by the model (ADU).
-            Added to decomposition.reconstruction() so it matches the data scale.
-            For the last-frame Raman proxy, subtracted from Y[-1] so both sides
-            are in pure Raman space. Pass ensemble["dark_offset_adu"] from
-            sample_posterior(). Defaults to 0 (no correction).
+        dark_offset_adu: Global dark baseline (ADU) learned by the model — a single
+            scalar shared across all samples. Added to decomposition.reconstruction()
+            so it matches the raw data scale. For the last-frame Raman proxy,
+            subtracted from Y[-1] so both sides are in pure Raman space.
+            Pass ensemble["dark_offset_adu"] from sample_posterior(). Defaults to 0.
 
     Returns:
         Tuple of (figure, axes)
@@ -164,21 +164,24 @@ def visualise_decomposition(
     else:
         t_train_cutoff = None
 
-    # Reference Raman: if derived from Y it is already counts/frame; if provided
-    # externally (e.g. GT from generate.py) it is counts/sec → scale by frame_dur.
+    # Plot 2 comparison strategy:
+    #   Real data (no GT): compare Y[-1] vs reconstruction[-1] — both at the same
+    #   last time point, both in raw ADU, so residual fluorescence cancels out.
+    #   Synthetic data (GT provided): compare extracted Raman rate vs true GT Raman.
     if reference_raman is None:
-        # Best available proxy: last observed frame (most bleached).
-        # Y contains dark_offset_adu as a constant baseline; subtract it so
-        # the reference sits in pure Raman space (matching raman_per_frame).
-        ref_raman_per_frame = Y[-1] - dark_offset_adu
-        ref_raman_label = "Last frame − dark residual" if dark_offset_adu != 0.0 else "Last frame (most bleached)"
-        msg = "No reference Raman provided — using last observed frame as proxy."
-        if dark_offset_adu != 0.0:
-            msg += f"  Dark residual corrected: {dark_offset_adu:+.2f} ADU."
-        print(msg)
+        # Both observed and reconstructed at the identical last time point.
+        plot2_observed  = Y[-1]              # raw ADU at t_last
+        plot2_predicted = reconstruction[-1] # model ADU at t_last
+        plot2_obs_label  = f"Observed (t={time_values[-1]:.2f}s)" if time_values is not None else "Observed (last frame)"
+        plot2_pred_label = f"Reconstruction (t={time_values[-1]:.2f}s)" if time_values is not None else "Reconstruction (last frame)"
+        plot2_title_prefix = "Last-frame comparison"
+        print("No reference Raman provided — comparing observed vs reconstructed at last time point.")
     else:
-        ref_raman_per_frame = reference_raman * frame_dur  # counts/sec → counts/frame
-        ref_raman_label = "Ground Truth Raman"
+        plot2_observed  = reference_raman * frame_dur  # GT counts/sec → counts/frame
+        plot2_predicted = raman_per_frame              # extracted Raman counts/frame
+        plot2_obs_label  = "Ground Truth Raman"
+        plot2_pred_label = "Predicted Raman"
+        plot2_title_prefix = "Extracted Raman Spectrum"
 
     # ── Consistent colour palette ────────────────────────────────────────────
     # Colours are keyed to GT fluorophore index so the same entity always
@@ -272,27 +275,27 @@ def visualise_decomposition(
     ax.legend(fontsize=7, ncol=2)
     ax.grid(True, alpha=0.3)
 
-    # ── Plot 2: Extracted Raman vs reference ─────────────────────────────────
+    # ── Plot 2: Reconstruction vs observed at last time point (or GT Raman) ──
     ax = axes[0, 1]
     ax.plot(
         wavenumbers,
-        raman_per_frame,
+        plot2_predicted,
         color=_COLORS[0],
         linewidth=2,
-        label="Predicted Raman",
+        label=plot2_pred_label,
     )
     ax.plot(
         wavenumbers,
-        ref_raman_per_frame,
+        plot2_observed,
         "r--",
         linewidth=1.5,
         alpha=0.8,
-        label=ref_raman_label,
+        label=plot2_obs_label,
     )
-    raman_corr = np.corrcoef(raman_per_frame, ref_raman_per_frame)[0, 1]
+    plot2_corr = np.corrcoef(plot2_predicted, plot2_observed)[0, 1]
     ax.set_xlabel("Wavenumber (cm⁻¹)")
     ax.set_ylabel("Intensity (counts/frame)")
-    ax.set_title(f"Extracted Raman Spectrum  (r = {raman_corr:.4f})")
+    ax.set_title(f"{plot2_title_prefix}  (r = {plot2_corr:.4f})")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
@@ -462,7 +465,7 @@ def visualise_decomposition(
     # ── Printed summary ───────────────────────────────────────────────────────
     print(f"\nReconstruction MSE (all frames):        {mse_all:.4f}")
     print(f"Reconstruction MSE (first {n_first:2d} frames):  {mse_first:.4f}")
-    print(f"Raman correlation with reference:       {raman_corr:.4f}")
+    print(f"Raman correlation with reference:       {plot2_corr:.4f}")
     print(f"Time constants τ (s):  {time_constants}")
     print(f"Abundances w:          {abundances}")
 
@@ -1273,8 +1276,8 @@ def visualize_decomposition_3d(
     if frame_dur is None:
         frame_dur = 1.0
 
-    # Total fluorescence = reconstruction - raman contribution
-    raman_per_frame = raman
+    # Total fluorescence = reconstruction - raman contribution (counts/sec → counts/frame)
+    raman_per_frame = raman * frame_dur
     total_fluor = reconstruction - np.tile(raman_per_frame, (n_t, 1))
 
     # Subsample for performance
@@ -1638,7 +1641,7 @@ def plot_raman_posterior(
     sample_alpha : float
         Per-trace opacity. 200 traces at 0.15 gives good density impression.
     dark_offset_adu : float, optional
-        Global dark residual from ensemble["dark_offset_adu"]. When provided,
+        Global dark residual from ensemble["dark_offset_adu"] or similar. When provided,
         a horizontal dashed line is drawn at this level on each figure so the
         scale of the correction is visible relative to the Raman signal.
     """
