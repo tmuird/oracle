@@ -521,9 +521,27 @@ class SyntheticBleachingDataset:
         raman_gt = np.zeros((n_samples, n_wn), dtype=np.float32)
         wavenumbers_all = np.zeros((n_samples, n_wn), dtype=np.float32)
 
-        n_atcc_samples = len(self.raman_spectra["sample"])
+        n_raman_available = len(self.raman_spectra["sample"])
         decay_rates_gt = np.zeros((n_samples, n_f), dtype=np.float32)
         abundances_gt = np.zeros((n_samples, n_f), dtype=np.float32)
+
+        if n_samples > n_raman_available:
+            print(
+                f"Warning: n_samples={n_samples} > available Raman spectra ({n_raman_available}). "
+                f"Capping to {n_raman_available} to avoid duplicates."
+            )
+            n_samples = n_raman_available
+            intensity_noisy = intensity_noisy[:n_samples]
+            intensity_clean = intensity_clean[:n_samples]
+            raman_gt = raman_gt[:n_samples]
+            wavenumbers_all = wavenumbers_all[:n_samples]
+            decay_rates_gt = decay_rates_gt[:n_samples]
+            abundances_gt = abundances_gt[:n_samples]
+            if self.fluorophore_names:
+                self.fluorophore_names = self.fluorophore_names[:n_samples]
+
+        # Sample without replacement so each Raman spectrum is used at most once.
+        raman_indices = self.rng.permutation(n_raman_available)[:n_samples]
 
         species_list = []
 
@@ -536,17 +554,17 @@ class SyntheticBleachingDataset:
         if self.fluorophore_xr is not None:
             print("Sampling real fluorophore spectra...")
         for i in range(n_samples):
-            atcc_idx = self.rng.integers(0, n_atcc_samples)
-            raman = self.raman_spectra[self.intensity_var].isel(sample=atcc_idx).values
+            raman_idx = int(raman_indices[i])
+            raman = self.raman_spectra[self.intensity_var].isel(sample=raman_idx).values
 
             if self.wavenumbers.ndim == 2:
-                wn = self.wavenumbers[atcc_idx]
+                wn = self.wavenumbers[raman_idx]
             else:
                 wn = self.wavenumbers
 
             if "species" in self.raman_spectra:
                 species = str(
-                    self.raman_spectra["species"].isel(sample=atcc_idx).values
+                    self.raman_spectra["species"].isel(sample=raman_idx).values
                 )
             else:
                 species = "Unknown"
