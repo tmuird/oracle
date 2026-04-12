@@ -96,7 +96,6 @@ def visualise_decomposition(
     figsize: Tuple[int, int] = (20, 10),
     n_train: Optional[int] = None,
     sample_id: Optional[str] = None,
-    dark_offset_adu: float = 0.0,
 ):
     """
     Visualize spectral decomposition results.
@@ -114,11 +113,6 @@ def visualise_decomposition(
         figsize: Figure size.
         n_train: Number of training frames — adds a cutoff line and shades regions.
         sample_id: Optional label shown in the suptitle.
-        dark_offset_adu: Global dark baseline (ADU) learned by the model — a single
-            scalar shared across all samples. Added to decomposition.reconstruction()
-            so it matches the raw data scale. For the last-frame Raman proxy,
-            subtracted from Y[-1] so both sides are in pure Raman space.
-            Pass ensemble["dark_offset_adu"] from sample_posterior(). Defaults to 0.
 
     Returns:
         Tuple of (figure, axes)
@@ -154,9 +148,7 @@ def visualise_decomposition(
     raman_per_frame = raman * frame_dur
 
     # decomposition.reconstruction() returns fluorescence + raman·Δt in ADU.
-    # dark_offset_adu is the global residual dark level not captured by the loader
-    # subtraction. Add it so the reconstruction sits on the same baseline as Y.
-    reconstruction = decomposition.reconstruction(time_values) + dark_offset_adu
+    reconstruction = decomposition.reconstruction(time_values)
 
     # Training cutoff time for vertical line — placed at the last *used* frame.
     if n_train is not None and time_values is not None and len(time_values) > 0:
@@ -390,13 +382,29 @@ def visualise_decomposition(
         ax.plot(
             time_values, total_gt_fluor, "r--", linewidth=2, label="Total GT fluor."
         )
-    ax.plot(time_values, total_fluor, "k-", linewidth=2, label="Total Predicted")
+    ax.plot(time_values, total_fluor, "k-", linewidth=2, label="Total pred. fluor.")
+
+    # ── Observed decay profile vs prediction (no GT decomposition needed) ─────
+    # Average over wavenumbers → 1D decay curve containing fluor + Raman.
+    # Predicted Raman appears as a constant floor; subtracting it from the
+    # observed profile gives an estimate of the GT fluorescence decay.
+    raman_floor = float(raman_per_frame.mean())
+    gt_profile = Y.mean(axis=1)           # [T] observed total (ADU)
+    gt_fluor_est = gt_profile - raman_floor  # observed minus predicted Raman floor
+
+    ax.plot(time_values, gt_profile, color="dimgray", linewidth=1.5,
+            linestyle=":", alpha=0.85, label="GT total (wn avg)")
+    ax.axhline(raman_floor, color="steelblue", linestyle="--", linewidth=1.2,
+               alpha=0.7, label=f"Pred. Raman floor ({raman_floor:.1f})")
+    ax.plot(time_values, gt_fluor_est, color="tomato", linewidth=1.5,
+            linestyle=":", alpha=0.85, label="GT − Raman (≈ fluor.)")
+
     _add_train_cutoff(ax)
     if t_train_cutoff is not None:
         ax.axvspan(time_values[0], t_train_cutoff, alpha=0.06, color="steelblue")
         ax.axvspan(t_train_cutoff, time_values[-1], alpha=0.06, color="darkorange")
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Mean fluorescence (counts/frame)")
+    ax.set_ylabel("Mean intensity (counts/frame)")
     ax.set_title("Decay Components")
     ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
@@ -1607,7 +1615,6 @@ def plot_raman_posterior(
     sample_alpha: float = 0.15,
     figsize: Tuple[int, int] = (8, 5),
     sample_id: Optional[str] = None,
-    dark_offset_adu: Optional[float] = None,
 ) -> Tuple[Figure, Figure, Figure]:
     """
     Three separate figures summarising the Raman posterior over N stochastic draws.
@@ -1640,15 +1647,7 @@ def plot_raman_posterior(
         Half-width multiplier for the std tube in fig_tube.
     sample_alpha : float
         Per-trace opacity. 200 traces at 0.15 gives good density impression.
-    dark_offset_adu : float, optional
-        Global dark residual from ensemble["dark_offset_adu"] or similar. When provided,
-        a horizontal dashed line is drawn at this level on each figure so the
-        scale of the correction is visible relative to the Raman signal.
     """
-    # Resolve dark_offset_adu from ensemble if not explicitly given
-    if dark_offset_adu is None:
-        dark_offset_adu = ensemble.get("dark_offset_adu", 0.0)
-
     raman = ensemble["raman"] * frame_duration   # [N, W] counts/frame
     ref = reference_raman * frame_duration if reference_raman is not None else None
 
@@ -1671,11 +1670,6 @@ def plot_raman_posterior(
         if ref is not None:
             ax.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
                     label="Ground truth", zorder=7)
-        if dark_offset_adu != 0.0:
-            ax.axhline(dark_offset_adu, color="#888888", linewidth=1.0,
-                       linestyle=":", label=f"Dark residual ({dark_offset_adu:+.1f} ADU)",
-                       zorder=6)
-
     def _axis_labels(ax):
         ax.set_xlabel("Wavenumber (cm⁻¹)")
         ax.set_ylabel("Intensity (counts/frame)")
