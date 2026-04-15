@@ -6,17 +6,18 @@ Fluorescence decay is always synthetic; Raman can be real ATCC spectra
 (simulate_raman=False) or fully synthetic via ramanspy (simulate_raman=True).
 """
 
-from typing_extensions import Literal
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+
 import numpy as np
 import xarray as xr
-from dataclasses import dataclass, field
-from typing import Optional, Tuple, List
 from skimage.metrics import peak_signal_noise_ratio
+from typing_extensions import Literal
 
 from ramanlib.bleaching.physics import (
+    interpolate_bases,
     l2_normalize,
     linf_normalize,
-    interpolate_bases,
     reconstruct_time_series_numpy,
 )
 
@@ -28,9 +29,7 @@ class SyntheticConfig:
     n_samples: int = 5000
     physics_model: Literal["integrated", "factored", "pointsample"] = "pointsample"
     laser_nm: float = 532.0
-    simulate_raman: bool = (
-        False  # controls data source in train.py: False = real ATCC, True = synthetic via ramanspy
-    )
+    simulate_raman: bool = False  # controls data source in train.py: False = real ATCC, True = synthetic via ramanspy
     # Temporal parameters
     bleaching_times: Optional[List[float]] = None
     bleaching_interval: float = 0.1
@@ -86,6 +85,15 @@ class SyntheticConfig:
     smooth_sigma: float = (
         0.0  # Gaussian smoothing of interpolated bases (cm⁻¹); 0 = off
     )
+
+    # Class-conditioned fluorophore assignment (requires n_active_per_sample and species labels)
+    # Each class gets a Dirichlet-sampled probability row over the fluorophore bank.
+    # Lower alpha → more peaked / specialised per class; higher → more uniform.
+    use_class_conditioned_fluorophores: bool = False
+    dirichlet_alpha: float = 0.15
+    # Relative Gaussian noise on base τ per sample — simulates intra-class biological variance.
+    # E.g. 0.15 → ±15% variation around each fluorophore's characteristic lifetime.
+    tau_noise_std: float = 0.15
 
     seed: Optional[int] = None
 
@@ -172,9 +180,11 @@ class SyntheticBleachingDataset:
         # Both simulate_raman=True (ramanspy) and simulate_raman=False (real ATCC)
         # use raman_xr as the source
         if "integration_time" in raman_xr.dims or "integration_time" in raman_xr.coords:
-            latest_time = (
-                config.integration_times[-1] if config.integration_times else "15s"
-            )
+            requested = config.integration_times[-1] if config.integration_times else "15s"
+            available = list(raman_xr.coords["integration_time"].values)
+            latest_time = requested if requested in available else available[-1]
+            if latest_time != requested:
+                print(f"Integration time '{requested}' not in dataset; using '{latest_time}'")
             self.raman_spectra = raman_xr.sel(integration_time=latest_time)
             print(f"Integration time: '{latest_time}'")
         else:
@@ -209,6 +219,44 @@ class SyntheticBleachingDataset:
             self.shared_bases = self._generate_fluorophore_bases(ref_wavenumbers)
         # if fluorophore_xr is not None and "fluorophore_name" in fluorophore_xr:
         #     if self.config.use_shared_bases:
+
+        # ── Class-conditioned fluorophore assignment ──────────────────────────
+        self.class_probs: Optional[np.ndarray] = None
+        self.class_to_idx: Optional[dict] = None
+        self.base_rates: Optional[np.ndarray] = None
+
+        if config.use_class_conditioned_fluorophores:
+            if config.n_active_per_sample is None:
+                print(
+                    "Warning: use_class_conditioned_fluorophores=True but "
+                    "n_active_per_sample is None — class conditioning has no "
+                    "effect without a bank (all fluorophores are always active)."
+                )
+            if "species" in self.raman_spectra:
+                all_species = self.raman_spectra["species"].values.astype(str)
+                unique_classes = np.unique(all_species)
+                self.class_to_idx = {c: int(i) for i, c in enumerate(unique_classes)}
+                n_classes = len(unique_classes)
+                n_f = config.n_fluorophores
+                # [n_classes, n_fluorophores] — each row is a probability vector
+                self.class_probs = self.rng.dirichlet(
+                    alpha=[config.dirichlet_alpha] * n_f, size=n_classes
+                )
+                # Characteristic decay rate for each fluorophore in the bank.
+                # Sampled once per run from the configured multi-component distribution
+                # so the bank spans the full slow/medium/fast range.
+                self.base_rates = self._generate_decay_rates(n=n_f)
+                print(
+                    f"Class-conditioned fluorophores: {n_classes} classes × "
+                    f"{n_f} fluorophores | α={config.dirichlet_alpha} | "
+                    f"τ-noise={config.tau_noise_std}"
+                )
+                print(f"  Base rates (s⁻¹): {np.round(self.base_rates, 3)}")
+            else:
+                print(
+                    "Warning: use_class_conditioned_fluorophores=True but "
+                    "raman_xr has no 'species' coordinate — conditioning disabled."
+                )
 
         self.dataset: Optional[xr.Dataset] = None
 
@@ -433,7 +481,6 @@ class SyntheticBleachingDataset:
             shot_noisy = self.rng.poisson(scaled) / self.config.poisson_noise_scale
 
             # 2. Read noise (Gaussian) - constant, detector property
-            # Typical CCD: ~5 counts RMS. Scale this by gaussian_noise_scale
             read_noise_std = self.config.gaussian_noise_scale
             read_noise = self.rng.normal(0, read_noise_std, signal.shape)
 
@@ -578,16 +625,32 @@ class SyntheticBleachingDataset:
             n_active = self.config.n_active_per_sample
             physics_model = self.config.physics_model
             if n_active is not None:
-                # Bank-of-N, draw-K mode: randomly select n_active from the bank.
-                # Only active components contribute to the signal; inactive ones
-                # have zero abundance in the stored GT but their basis spectra are
-                # still present in the shared bank (fluorophore_bases_gt).
-                active_idx = self.rng.choice(n_f, n_active, replace=False)
-                active_bases = bases[active_idx]
-                active_rates = self._generate_decay_rates(n=n_active)
-                active_abund = self._generate_abundances(
-                    raman, active_bases, n=n_active
-                )
+                # Bank-of-N, draw-K mode.
+                # Only active components contribute; inactive ones have zero abundance
+                # in the GT but their basis spectra remain in the shared bank.
+                if (
+                    self.class_probs is not None
+                    and self.class_to_idx is not None
+                    and species in self.class_to_idx
+                ):
+                    # Class-conditioned: weighted draw + per-fluorophore τ noise
+                    class_idx = self.class_to_idx[species]
+                    probs = self.class_probs[class_idx]  # [n_f] probability vector
+                    active_idx = self.rng.choice(n_f, n_active, replace=False, p=probs)
+                    active_bases = bases[active_idx]
+                    # Characteristic rates + intra-class noise (relative Gaussian)
+                    noise = np.clip(
+                        1.0 + self.rng.normal(0, self.config.tau_noise_std, n_active),
+                        0.5, 2.0,
+                    )
+                    active_rates = (self.base_rates[active_idx] * noise).astype(np.float32)
+                else:
+                    # Uniform random selection (original behaviour / fallback)
+                    active_idx = self.rng.choice(n_f, n_active, replace=False)
+                    active_bases = bases[active_idx]
+                    active_rates = self._generate_decay_rates(n=n_active)
+
+                active_abund = self._generate_abundances(raman, active_bases, n=n_active)
 
                 decay_rates = np.zeros(n_f, dtype=np.float32)
                 abundances = np.zeros(n_f, dtype=np.float32)

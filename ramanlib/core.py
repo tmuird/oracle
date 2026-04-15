@@ -287,6 +287,19 @@ class SpectralData:
                 time_values=self.time_values,
             )
 
+    def mean(self, axis: int = 0) -> "SpectralData":
+        """Return a new SpectralData containing the mean along `axis`.
+
+        axis=0 (default) averages over samples/timepoints → single spectrum.
+        axis=1 averages over wavenumbers → one scalar per sample (rarely useful).
+        """
+        mean_intensities = self.intensities.mean(axis=axis, keepdims=True)
+        return SpectralData(
+            intensities=mean_intensities,
+            wavenumbers=self.wavenumbers if self.wavenumbers.ndim == 1 else self.wavenumbers[0:1],
+            label=f"{_label_to_string(self.label)} (mean)",
+        )
+
     def baseline_correction(self, method="iarpls", **kwargs) -> "SpectralData":
         """
         Apply baseline correction using RamanSPy.

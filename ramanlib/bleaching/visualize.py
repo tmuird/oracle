@@ -1,6 +1,6 @@
 """Visualization utilities for bleaching decomposition."""
 
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -1725,3 +1725,105 @@ def plot_raman_posterior(
         print(f"  RMSE      (mean vs GT):  {rmse:.4f}")
 
     return fig_raw, fig_overlay, fig_tube
+
+
+def plot_raman_credible_band(
+    ensemble: dict,
+    wavenumbers: np.ndarray,
+    reference_raman: Optional[np.ndarray] = None,
+    frame_duration: float = 0.1,
+    ci: float = 0.90,
+    sample_id: Optional[str] = None,
+    figsize: tuple = (7, 4),
+) -> "Figure":
+    """
+    Publication-quality Raman posterior summary: single figure, two panels.
+
+    Left panel — credible band:
+        Shaded ``ci`` interval (e.g. 90 % → 5th–95th percentile) + median.
+        No individual traces. Optionally overlays a ground-truth reference.
+
+    Right panel — uncertainty profile:
+        Posterior standard deviation (σ) at each wavenumber, revealing where
+        the model is most uncertain (peak positions vs. baseline).
+
+    Parameters
+    ----------
+    ensemble : dict
+        Output of ``sample_posterior()``. Key ``'raman'`` is [N, W] in counts/sec.
+    wavenumbers : (W,)
+    reference_raman : (W,) counts/sec, optional.
+    frame_duration : float
+        Converts counts/sec → counts/frame for display.
+    ci : float
+        Credible interval width in (0, 1). Default 0.90 → 5th/95th percentiles.
+    sample_id : str, optional
+        Added to the suptitle.
+    figsize : (w, h)
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import AutoMinorLocator
+
+    raman = ensemble["raman"] * frame_duration   # [N, W] counts/frame
+    ref   = reference_raman * frame_duration if reference_raman is not None else None
+
+    p_lo  = 100 * (1 - ci) / 2
+    p_hi  = 100 - p_lo
+    q_lo  = np.percentile(raman, p_lo,  axis=0)
+    median = np.percentile(raman, 50.0, axis=0)
+    q_hi  = np.percentile(raman, p_hi,  axis=0)
+    std   = raman.std(axis=0, ddof=1)
+    N     = len(raman)
+
+    _BLUE = "#4477AA"
+    _REF  = "#BB5566"
+
+    def _style(ax):
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.xaxis.set_minor_locator(AutoMinorLocator())
+        ax.yaxis.set_minor_locator(AutoMinorLocator())
+        ax.set_xlabel("Wavenumber (cm⁻¹)", fontsize=9)
+
+    fig, (ax_band, ax_std) = plt.subplots(1, 2, figsize=figsize)
+
+    # ── Left: credible band ───────────────────────────────────────────────────
+    ax_band.fill_between(
+        wavenumbers, q_lo, q_hi,
+        alpha=0.25, color=_BLUE,
+        label=f"{int(ci*100):d}% CI  (p{p_lo:.0f}–p{p_hi:.0f})",
+    )
+    ax_band.plot(wavenumbers, median, color=_BLUE, linewidth=1.8, label="Median")
+    if ref is not None:
+        ax_band.plot(wavenumbers, ref, color=_REF, linewidth=1.5,
+                     linestyle="--", label="Ground truth", zorder=5)
+    _style(ax_band)
+    ax_band.set_ylabel("Intensity (counts/frame)", fontsize=9)
+    ax_band.set_title(f"Raman posterior  (N={N})", fontsize=9, fontweight="bold")
+    ax_band.legend(fontsize=8, frameon=False)
+
+    # ── Right: uncertainty profile ────────────────────────────────────────────
+    ax_std.fill_between(wavenumbers, 0, std, alpha=0.30, color=_BLUE)
+    ax_std.plot(wavenumbers, std, color=_BLUE, linewidth=1.5)
+    _style(ax_std)
+    ax_std.set_ylabel("Posterior σ (counts/frame)", fontsize=9)
+    ax_std.set_title("Spectral uncertainty", fontsize=9, fontweight="bold")
+    ax_std.set_ylim(bottom=0)
+
+    # ── Posterior summary ─────────────────────────────────────────────────────
+    cv = std.mean() / (raman.mean() + 1e-12)
+    print(f"Raman posterior  N={N}  |  CV={cv:.3f}  |  "
+          f"σ range=[{std.min():.4f}, {std.max():.4f}]")
+    if ref is not None:
+        from scipy.stats import pearsonr
+        r, _ = pearsonr(median, ref)
+        print(f"Pearson r (median vs GT): {r:.4f}")
+
+    suptitle = f"Sample {sample_id}" if sample_id else "Raman posterior"
+    fig.suptitle(suptitle, fontsize=10, fontweight="bold", y=1.01)
+    fig.tight_layout()
+    return fig
