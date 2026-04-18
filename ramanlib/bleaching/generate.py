@@ -180,11 +180,15 @@ class SyntheticBleachingDataset:
         # Both simulate_raman=True (ramanspy) and simulate_raman=False (real ATCC)
         # use raman_xr as the source
         if "integration_time" in raman_xr.dims or "integration_time" in raman_xr.coords:
-            requested = config.integration_times[-1] if config.integration_times else "15s"
+            requested = (
+                config.integration_times[-1] if config.integration_times else "15s"
+            )
             available = list(raman_xr.coords["integration_time"].values)
             latest_time = requested if requested in available else available[-1]
             if latest_time != requested:
-                print(f"Integration time '{requested}' not in dataset; using '{latest_time}'")
+                print(
+                    f"Integration time '{requested}' not in dataset; using '{latest_time}'"
+                )
             self.raman_spectra = raman_xr.sel(integration_time=latest_time)
             print(f"Integration time: '{latest_time}'")
         else:
@@ -320,11 +324,13 @@ class SyntheticBleachingDataset:
         if "wavenumber" in fluor_ds.coords:
             source_wn = fluor_ds["wavenumber"].values
             # Check if source_wn is shared or per-sample
-            if source_wn.ndim == 1:
-                print("The fluorophore dataset has a shared wavenumber axis.")
-            else:
-                print("The fluorophore dataset has a per-sample wavenumber axis.")
+            # if source_wn.ndim == 1:
+            #     # print("The fluorophore dataset has a shared wavenumber axis.")
+            #
+            if source_wn.ndim > 1:
+                # print("The fluorophore dataset has a per-sample wavenumber axis.")
                 source_wn = source_wn[0]
+                print("Multiple axes detected")
 
         elif "wavelength" in fluor_ds.coords:
             from ramanlib.bleaching.fluorophores import nm_to_wavenumber
@@ -530,7 +536,7 @@ class SyntheticBleachingDataset:
         decay_rates: np.ndarray,
         physics_model: str,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        print(f"Reconstructing according to physics model: {physics_model}")
+        # print(f"Reconstructing according to physics model: {physics_model}")
         clean = reconstruct_time_series_numpy(
             raman,
             bases,
@@ -544,11 +550,12 @@ class SyntheticBleachingDataset:
         n_t = len(self.bleaching_times)
         # Raman contribution per frame is raman * frame_duration
         raman_per_frame = raman * self.config.bleaching_interval
-        fluorescence_time_series = clean - np.tile(raman_per_frame, (n_t, 1))
+        fluorescence_time_series = clean - raman_per_frame[None, :]  # [n_t, W]
 
-        noisy = np.zeros_like(clean)
-        for t in range(n_t):
-            noisy[t] = self._add_noise(raman_per_frame, fluorescence_time_series[t])
+        # _add_noise uses numpy ops throughout, so broadcasting over the full
+        # [n_t, W] array is equivalent to the previous per-frame loop but
+        # issues a single rng.poisson() call instead of n_t separate ones.
+        noisy = self._add_noise(raman_per_frame, fluorescence_time_series)  # [n_t, W]
 
         return noisy, clean
 
@@ -641,16 +648,21 @@ class SyntheticBleachingDataset:
                     # Characteristic rates + intra-class noise (relative Gaussian)
                     noise = np.clip(
                         1.0 + self.rng.normal(0, self.config.tau_noise_std, n_active),
-                        0.5, 2.0,
+                        0.5,
+                        2.0,
                     )
-                    active_rates = (self.base_rates[active_idx] * noise).astype(np.float32)
+                    active_rates = (self.base_rates[active_idx] * noise).astype(
+                        np.float32
+                    )
                 else:
                     # Uniform random selection (original behaviour / fallback)
                     active_idx = self.rng.choice(n_f, n_active, replace=False)
                     active_bases = bases[active_idx]
                     active_rates = self._generate_decay_rates(n=n_active)
 
-                active_abund = self._generate_abundances(raman, active_bases, n=n_active)
+                active_abund = self._generate_abundances(
+                    raman, active_bases, n=n_active
+                )
 
                 decay_rates = np.zeros(n_f, dtype=np.float32)
                 abundances = np.zeros(n_f, dtype=np.float32)
