@@ -771,7 +771,9 @@ def load_data(
     else:
         if data_folder is not None:
             print(f"Warning: data_folder is ignored in simulation mode")
-        dataset = simulate_data(n_samples=n_samples, spectral_axis=spectral_axis, seed=seed)
+        dataset = simulate_data(
+            n_samples=n_samples, spectral_axis=spectral_axis, seed=seed
+        )
 
     if errors:
         print(f"\nWarning: {len(errors)} files failed to load")
@@ -853,7 +855,10 @@ def simulate_data(
 
     for i in range(n_samples):
         spectrum = rp.synth.generate_spectra(
-            1, n_bands, realistic=realistic, spectral_axis=spectral_axis,
+            1,
+            n_bands,
+            realistic=realistic,
+            spectral_axis=spectral_axis,
             seed=None if seed is None else seed + i,
         )[0]
         metadata = {

@@ -580,22 +580,11 @@ class SyntheticBleachingDataset:
         abundances_gt = np.zeros((n_samples, n_f), dtype=np.float32)
 
         if n_samples > n_raman_available:
-            print(
-                f"Warning: n_samples={n_samples} > available Raman spectra ({n_raman_available}). "
-                f"Capping to {n_raman_available} to avoid duplicates."
-            )
-            n_samples = n_raman_available
-            intensity_noisy = intensity_noisy[:n_samples]
-            intensity_clean = intensity_clean[:n_samples]
-            raman_gt = raman_gt[:n_samples]
-            wavenumbers_all = wavenumbers_all[:n_samples]
-            decay_rates_gt = decay_rates_gt[:n_samples]
-            abundances_gt = abundances_gt[:n_samples]
-            if self.fluorophore_names:
-                self.fluorophore_names = self.fluorophore_names[:n_samples]
-
-        # Sample without replacement so each Raman spectrum is used at most once.
-        raman_indices = self.rng.permutation(n_raman_available)[:n_samples]
+            raman_indices = self.rng.choice(n_raman_available, n_samples, replace=True)
+        elif n_samples < n_raman_available:
+            raman_indices = self.rng.choice(n_raman_available, n_samples, replace=False)
+        else:
+            raman_indices = self.rng.permutation(n_raman_available)
 
         species_list = []
 

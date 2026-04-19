@@ -1827,3 +1827,699 @@ def plot_raman_credible_band(
     fig.suptitle(suptitle, fontsize=10, fontweight="bold", y=1.01)
     fig.tight_layout()
     return fig
+
+
+# =============================================================================
+# Helpers: construct DecompositionResult / SpectralData from xarray datasets
+# =============================================================================
+#
+# Two dataset schemas are supported:
+#
+#   generate  — produced by SyntheticBleachingDataset.generate()
+#               intensity dims : [sample, bleaching_time, wavenumber]  → [T, W]
+#               time coord     : "bleaching_time"
+#               Raman GT       : "raman_gt"
+#
+#   pipeline  — produced by pipeline.process_and_export_dataset()
+#               intensity dims : [sample, wavenumber, time]             → [W, T] → .T
+#               time coord     : "time"
+#               Raman GT       : "gt_raman"
+#               frame duration : attrs["frame_duration_s"]
+#
+# Both share: coords["wavenumber"], "decay_rates_gt", "abundances_gt",
+#             "fluorophore_bases_gt", "intensity_clean" (synthetic only).
+# =============================================================================
+
+
+def _ds_time_coord(ds: "xr.Dataset") -> np.ndarray:
+    """Return the time axis regardless of whether it is called 'bleaching_time' or 'time'."""
+    for name in ("bleaching_time", "time"):
+        if name in ds.coords:
+            return ds.coords[name].values
+    raise KeyError(
+        "Dataset has neither a 'bleaching_time' nor a 'time' coordinate. "
+        f"Available coords: {list(ds.coords)}"
+    )
+
+
+def _ds_frame_duration(ds: "xr.Dataset") -> float:
+    """Return frame duration from attrs (pipeline) or inferred from time coord (generate)."""
+    if "frame_duration_s" in ds.attrs:
+        return float(ds.attrs["frame_duration_s"])
+    t = _ds_time_coord(ds)
+    return float(t[1] - t[0]) if len(t) > 1 else 0.1
+
+
+def _ds_intensity(ds: "xr.Dataset", sample_idx: int, use_clean: bool) -> np.ndarray:
+    """
+    Extract the ``[T, W]`` intensity array for one sample, handling both
+    dimension orderings.
+
+    Selection priority
+    ------------------
+    use_clean=True  → ``intensity_clean``  (both schemas; falls back to noisy)
+    use_clean=False → ``intensity_raw``    (generate schema)
+                   → ``time_series``       (pipeline schema)
+                   → ``intensity_clean``   (last resort)
+    """
+    available = set(ds.data_vars)
+
+    if use_clean:
+        candidates = ["intensity_clean", "intensity_raw", "time_series"]
+    else:
+        candidates = ["intensity_raw", "time_series", "intensity_clean"]
+
+    key = next((k for k in candidates if k in available), None)
+    if key is None:
+        raise KeyError(
+            f"No intensity variable found in dataset. Available: {list(available)}"
+        )
+
+    var = ds[key].isel(sample=sample_idx)
+    arr = var.values  # either [T, W] or [W, T]
+
+    # Detect axis order from dimension names
+    dims = var.dims
+    if dims[0] in ("bleaching_time", "time"):
+        return arr          # already [T, W]
+    else:
+        return arr.T        # [W, T] → [T, W]
+
+
+def _ds_raman_gt(ds: "xr.Dataset", sample_idx: int, wn: np.ndarray) -> np.ndarray:
+    """Return [W] Raman GT, trying 'raman_gt' then 'gt_raman'."""
+    for key in ("raman_gt", "gt_raman"):
+        if key in ds:
+            return ds[key].isel(sample=sample_idx).values
+    raise KeyError(
+        "No Raman GT variable found. Expected 'raman_gt' (generate schema) "
+        f"or 'gt_raman' (pipeline schema). Available: {list(ds.data_vars)}"
+    )
+
+
+def data_from_dataset(
+    ds: "xr.Dataset",
+    sample_idx: int = 0,
+    use_clean: bool = False,
+) -> "SpectralData":
+    """
+    Extract a single observed sample from an xarray Dataset as a
+    :class:`SpectralData` object ready for plotting.
+
+    Works with both the **generate** schema (``SyntheticBleachingDataset``)
+    and the **pipeline** schema (``process_and_export_dataset``).
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset from either ``SyntheticBleachingDataset.generate()`` or
+        ``pipeline.process_and_export_dataset()``.
+    sample_idx : int
+        Index along the ``sample`` dimension.
+    use_clean : bool
+        Prefer ``intensity_clean`` (noise-free forward model) over the noisy
+        observed frames.  Falls back gracefully if not present.
+
+    Returns
+    -------
+    SpectralData  shape ``(T, W)``, ``time_values`` set.
+    """
+    Y = _ds_intensity(ds, sample_idx, use_clean)
+    t = _ds_time_coord(ds)
+    wn = ds.coords["wavenumber"].values
+    return SpectralData(Y, wn, time_values=t)
+
+
+# Keep old name as an alias so existing notebooks don't break.
+data_from_gt_dataset = data_from_dataset
+
+
+def decomp_from_gt_dataset(
+    ds: "xr.Dataset",
+    sample_idx: int = 0,
+    physics_model: str = "integrated",
+) -> "DecompositionResult":
+    """
+    Build a :class:`DecompositionResult` from the ground-truth variables in an
+    xarray Dataset — no model inference needed.
+
+    Works with both the **generate** schema (``SyntheticBleachingDataset``)
+    and the **pipeline** schema (``process_and_export_dataset`` + synthetic GT).
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Must contain ``decay_rates_gt``, ``abundances_gt``,
+        ``fluorophore_bases_gt``, and either ``raman_gt`` (generate) or
+        ``gt_raman`` (pipeline).
+    sample_idx : int
+        Index along the ``sample`` dimension.
+    physics_model : str
+        Physics model tag (default ``"integrated"``).
+
+    Returns
+    -------
+    DecompositionResult
+    """
+    from ramanlib.bleaching.decompose import DecompositionResult
+
+    wn = ds.coords["wavenumber"].values
+    frame_dur = _ds_frame_duration(ds)
+
+    raman_arr = _ds_raman_gt(ds, sample_idx, wn)                       # [W]
+    rates_arr = ds["decay_rates_gt"].isel(sample=sample_idx).values    # [F]
+    abund_arr = ds["abundances_gt"].isel(sample=sample_idx).values     # [F]
+
+    bases_var = ds["fluorophore_bases_gt"]
+    if "sample" in bases_var.dims:
+        bases_arr = bases_var.isel(sample=sample_idx).values           # [F, W]
+    else:
+        bases_arr = bases_var.values                                   # [F, W] shared
+
+    return DecompositionResult(
+        raman=SpectralData(raman_arr, wn),
+        rates=rates_arr,
+        fluorophore_spectra=SpectralData(bases_arr, wn),
+        abundances=abund_arr,
+        physics_model=physics_model,
+        frame_duration=frame_dur,
+    )
+
+
+# =============================================================================
+# NeurIPS-quality 3D component decomposition figure
+# =============================================================================
+
+_NEURIPS_RC: dict = {
+    "font.family": "serif",
+    "font.size": 9,
+    "axes.labelsize": 8,
+    "axes.titlesize": 9,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "figure.dpi": 150,
+}
+
+_FLUORO_CMAPS = ["Reds", "Purples", "Greens", "YlOrBr", "PuBu"]
+
+_MPL_TO_PLOTLY: dict = {
+    "viridis": "Viridis",
+    "Blues": "Blues",
+    "Oranges": "Oranges",
+    "RdBu": "RdBu",
+    "Reds": "Reds",
+    "Purples": "Purples",
+    "Greens": "Greens",
+    "YlOrBr": "YlOrBr",
+    "PuBu": "Blues",
+}
+
+
+def _mpl_to_plotly_cmap(name: str) -> str:
+    return _MPL_TO_PLOTLY.get(name, name)
+
+
+def _compute_fluorophore_surface(
+    bases: np.ndarray,
+    abundances: np.ndarray,
+    rates: np.ndarray,
+    time_values: np.ndarray,
+    frame_duration: float,
+    idx: int,
+) -> np.ndarray:
+    """Return the [T, W] intensity surface for fluorophore *idx* (CCD-integrated)."""
+    lam = rates[idx]
+    T = frame_duration
+    ccd = (1.0 - np.exp(-lam * T)) / lam if lam > 1e-12 else T
+    decay = abundances[idx] * ccd * np.exp(-lam * time_values)  # [T]
+    return np.outer(decay, bases[idx])                          # [T, W]
+
+
+def _style_3d_ax(
+    ax,
+    title: str,
+    label_fontsize: int,
+    title_fontsize: int,
+) -> None:
+    """Apply consistent NeurIPS-style formatting to a 3-D matplotlib axis.
+
+    Axis convention: X = Time (left→right, decay starts left),
+                     Y = Wavenumber (depth), Z = Intensity.
+    """
+    ax.set_xlabel("Time (s)", fontsize=label_fontsize, labelpad=3)
+    ax.set_ylabel("Wavenumber (cm⁻¹)", fontsize=label_fontsize, labelpad=3)
+    ax.set_zlabel("Intensity", fontsize=label_fontsize, labelpad=3)
+    ax.set_title(title, fontsize=title_fontsize, pad=6)
+    ax.tick_params(labelsize=6, pad=1)
+    for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
+        pane.fill = False
+        pane.set_edgecolor("#cccccc")
+    ax.grid(True, alpha=0.2, linewidth=0.4)
+
+
+def _plot_components_3d_mpl(
+    wn_sub: np.ndarray,
+    t_sub: np.ndarray,
+    main_panels: list,
+    fluoro_panels: list,
+    elev: float,
+    azim: float,
+    figsize_per_panel: Tuple[float, float],
+    dpi: int,
+    label_fontsize: int,
+    title_fontsize: int,
+    show_colorbar: bool,
+) -> "Figure":
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 – registers 3d projection
+
+    n_main = len(main_panels)
+    n_fluoro = len(fluoro_panels)
+    n_rows = 1 + (1 if n_fluoro > 0 else 0)
+    n_cols = max(n_main, n_fluoro) if n_fluoro > 0 else n_main
+
+    # X = Time (left→right), Y = Wavenumber (depth).
+    # meshgrid(t_sub, wn_sub) → both (W, T); Z must be transposed to (W, T).
+    TG, WN = np.meshgrid(t_sub, wn_sub)
+    rcount = min(50, len(wn_sub))
+    ccount = min(100, len(t_sub))
+
+    fw = figsize_per_panel[0] * n_cols
+    fh = figsize_per_panel[1] * n_rows
+
+    with plt.rc_context(_NEURIPS_RC):
+        fig = plt.figure(figsize=(fw, fh), dpi=dpi)
+
+        def _add(row: int, col: int, title: str, Z: np.ndarray, cmap: str) -> None:
+            ax = fig.add_subplot(n_rows, n_cols, (row - 1) * n_cols + col, projection="3d")
+            surf = ax.plot_surface(
+                TG, WN, Z.T,          # Z [T, W] → .T gives [W, T] to match meshgrid
+                cmap=cmap,
+                linewidth=0,
+                antialiased=True,
+                alpha=0.93,
+                rcount=rcount,
+                ccount=ccount,
+            )
+            if show_colorbar:
+                fig.colorbar(surf, ax=ax, shrink=0.45, pad=0.05, aspect=14,
+                             format="%.0f")
+            ax.view_init(elev=elev, azim=azim)
+            _style_3d_ax(ax, title, label_fontsize, title_fontsize)
+
+        for col, (title, Z, cmap) in enumerate(main_panels, start=1):
+            _add(1, col, title, Z, cmap)
+
+        for col, (title, Z, cmap) in enumerate(fluoro_panels, start=1):
+            _add(2, col, title, Z, cmap)
+
+        plt.tight_layout(pad=1.5)
+        return fig
+
+
+def _plot_components_3d_plotly(
+    wn_sub: np.ndarray,
+    t_sub: np.ndarray,
+    main_panels: list,
+    fluoro_panels: list,
+) -> "go.Figure":
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    n_main = len(main_panels)
+    n_fluoro = len(fluoro_panels)
+    n_rows = 1 + (1 if n_fluoro > 0 else 0)
+    n_cols = max(n_main, n_fluoro) if n_fluoro > 0 else n_main
+
+    specs = [[{"type": "scene"}] * n_cols for _ in range(n_rows)]
+    subplot_titles = (
+        [p[0] for p in main_panels]
+        + [""] * (n_cols - n_main)          # pad empty slots in row 1
+        + [p[0] for p in fluoro_panels]
+    )
+
+    fig = make_subplots(
+        rows=n_rows,
+        cols=n_cols,
+        specs=specs,
+        subplot_titles=subplot_titles,
+    )
+
+    # X = Time (left→right), Y = Wavenumber, consistent with matplotlib layout.
+    # Plotly Surface: x maps to the axis going left→right, so pass t_sub as x.
+    # Z must be transposed to (W, T) so rows vary over Y (wavenumber).
+    scene_kw = dict(
+        xaxis_title="Time (s)",
+        yaxis_title="Wavenumber (cm⁻¹)",
+        zaxis_title="Intensity",
+        camera=dict(eye=dict(x=-1.6, y=-1.2, z=1.0)),
+        xaxis=dict(showgrid=True, gridcolor="#e0e0e0"),
+        yaxis=dict(showgrid=True, gridcolor="#e0e0e0"),
+        zaxis=dict(showgrid=True, gridcolor="#e0e0e0"),
+    )
+
+    def _add_trace(row: int, col: int, title: str, Z: np.ndarray, cmap: str) -> None:
+        fig.add_trace(
+            go.Surface(
+                x=t_sub, y=wn_sub, z=Z.T,   # Z [T,W] → .T gives [W,T] to match x/y
+                colorscale=_mpl_to_plotly_cmap(cmap),
+                showscale=False,
+                name=title,
+                opacity=0.93,
+            ),
+            row=row, col=col,
+        )
+        scene_idx = (row - 1) * n_cols + col
+        key = "scene" if scene_idx == 1 else f"scene{scene_idx}"
+        fig.update_layout(**{key: scene_kw})
+
+    for col, (title, Z, cmap) in enumerate(main_panels, start=1):
+        _add_trace(1, col, title, Z, cmap)
+
+    for col, (title, Z, cmap) in enumerate(fluoro_panels, start=1):
+        _add_trace(2, col, title, Z, cmap)
+
+    fig.update_layout(
+        width=420 * n_cols,
+        height=520 * n_rows,
+        margin=dict(l=20, r=20, t=60, b=20),
+        paper_bgcolor="white",
+        font=dict(family="serif", size=11),
+    )
+    return fig
+
+
+def plot_data_3d(
+    data: Union[np.ndarray, "SpectralData", "xr.Dataset"],
+    sample_idx: int = 0,
+    use_clean: bool = False,
+    time_range: Optional[Tuple[float, float]] = None,
+    subsample_wn: int = 2,
+    subsample_time: int = 1,
+    backend: str = "matplotlib",
+    elev: float = 25.0,
+    azim: float = -55.0,
+    figsize: Tuple[float, float] = (5.0, 4.0),
+    dpi: int = 150,
+    cmap: str = "viridis",
+    title: str = "Observed time series",
+    label_fontsize: int = 8,
+    title_fontsize: int = 9,
+    show_colorbar: bool = True,
+) -> "Figure":
+    """
+    NeurIPS-styled 3D surface plot of a raw observed time series — no model or
+    decomposition required.
+
+    Accepts a numpy array ``[T, W]``, a :class:`SpectralData` object, or an
+    xarray Dataset from either schema:
+
+    * **generate** (``SyntheticBleachingDataset``) — variables ``intensity_raw``
+      / ``intensity_clean``, coord ``bleaching_time``.
+    * **pipeline** (``process_and_export_dataset``) — variables ``time_series``
+      / ``intensity_clean``, coord ``time``, attr ``frame_duration_s``.
+
+    Parameters
+    ----------
+    data : np.ndarray [T, W], SpectralData, or xr.Dataset
+        Observed intensity data.
+    sample_idx : int
+        Sample index when *data* is an xarray Dataset.
+    use_clean : bool
+        When *data* is a Dataset, prefer ``intensity_clean`` (noise-free forward
+        model) over the noisy observed frames.  Falls back gracefully if not
+        present.
+    time_range : (t_start, t_end) in seconds, optional
+        Restrict the time axis shown.
+    subsample_wn, subsample_time : int
+        Downsampling factors for performance.
+    backend : {"matplotlib", "plotly"}
+    elev, azim : float
+        Viewing angles in degrees (matplotlib only).
+    figsize : (w, h) in inches (matplotlib only).
+    dpi : int (matplotlib only).
+    cmap : str
+        Colormap name.
+    title : str
+        Panel title.
+    label_fontsize, title_fontsize : int
+    show_colorbar : bool
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure or plotly.graph_objects.Figure
+    """
+    # Unpack input
+    if hasattr(data, "coords"):  # xr.Dataset — generate or pipeline schema
+        sd = data_from_dataset(data, sample_idx=sample_idx, use_clean=use_clean)
+    elif hasattr(data, "intensities"):  # SpectralData
+        sd = data
+    else:
+        arr = np.asarray(data)
+        n_t, n_wn = arr.shape
+        sd = SpectralData(arr, np.arange(n_wn, dtype=float),
+                          time_values=np.arange(n_t, dtype=float))
+
+    Y = sd.intensities
+    time_values = sd.time_values
+    wavenumbers = sd.wavenumbers
+    n_t, n_wn = Y.shape
+
+    if time_range is not None:
+        t_lo, t_hi = time_range
+        mask = (time_values >= t_lo) & (time_values <= t_hi)
+        time_values = time_values[mask]
+        Y = Y[mask]
+        n_t = len(time_values)
+
+    wn_idx = np.arange(0, n_wn, subsample_wn)
+    t_idx = np.arange(0, n_t, subsample_time)
+    wn_sub = wavenumbers[wn_idx]
+    t_sub = time_values[t_idx]
+    Z = Y[np.ix_(t_idx, wn_idx)]
+
+    if backend == "plotly":
+        import plotly.graph_objects as go
+        # X = Time (left→right), Y = Wavenumber, Z transposed accordingly.
+        fig = go.Figure(
+            go.Surface(
+                x=t_sub, y=wn_sub, z=Z.T,
+                colorscale=_mpl_to_plotly_cmap(cmap),
+                opacity=0.93,
+                colorbar=dict(title="Intensity") if show_colorbar else None,
+            )
+        )
+        fig.update_layout(
+            scene=dict(
+                xaxis_title="Time (s)",
+                yaxis_title="Wavenumber (cm⁻¹)",
+                zaxis_title="Intensity",
+                camera=dict(eye=dict(x=-1.6, y=-1.2, z=1.0)),
+            ),
+            title=title,
+            width=700,
+            height=560,
+            font=dict(family="serif", size=11),
+            paper_bgcolor="white",
+        )
+        return fig
+
+    # matplotlib — X = Time (left→right), Y = Wavenumber (depth)
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    TG, WN = np.meshgrid(t_sub, wn_sub)       # both (W, T)
+    rcount = min(50, len(wn_sub))
+    ccount = min(100, len(t_sub))
+
+    with plt.rc_context(_NEURIPS_RC):
+        fig = plt.figure(figsize=figsize, dpi=dpi)
+        ax = fig.add_subplot(1, 1, 1, projection="3d")
+        surf = ax.plot_surface(
+            TG, WN, Z.T,               # Z [T, W] → .T gives [W, T]
+            cmap=cmap,
+            linewidth=0,
+            antialiased=True,
+            alpha=0.93,
+            rcount=rcount,
+            ccount=ccount,
+        )
+        if show_colorbar:
+            fig.colorbar(surf, ax=ax, shrink=0.45, pad=0.05, aspect=14,
+                         format="%.0f")
+        ax.view_init(elev=elev, azim=azim)
+        _style_3d_ax(ax, title, label_fontsize, title_fontsize)
+        plt.tight_layout(pad=1.2)
+    return fig
+
+
+def plot_components_3d(
+    data: Union[np.ndarray, "SpectralData"],
+    decomposition: "DecompositionResult",
+    time_range: Optional[Tuple[float, float]] = None,
+    subsample_wn: int = 2,
+    subsample_time: int = 1,
+    show_noise: bool = True,
+    show_individual_fluorophores: bool = True,
+    backend: str = "matplotlib",
+    elev: float = 25.0,
+    azim: float = -55.0,
+    figsize_per_panel: Tuple[float, float] = (3.5, 3.2),
+    dpi: int = 150,
+    cmap_observed: str = "viridis",
+    cmap_raman: str = "Blues",
+    cmap_fluorescence: str = "Oranges",
+    cmap_noise: str = "RdBu",
+    cmap_fluorophores: Optional[list] = None,
+    label_fontsize: int = 8,
+    title_fontsize: int = 9,
+    show_colorbar: bool = True,
+) -> "Figure":
+    """
+    Publication-quality 3D surface panels showing observed data and its
+    decomposition into Raman, fluorescence, noise, and (optionally) individual
+    fluorophore decay surfaces.
+
+    Suitable for NeurIPS headline figures.  Each panel is a 3D surface over
+    (Wavenumber × Time × Intensity).
+
+    Parameters
+    ----------
+    data : np.ndarray [T, W] or SpectralData
+        Observed time series.
+    decomposition : DecompositionResult
+        Result containing raman, fluorophore_spectra, rates, abundances,
+        physics_model and frame_duration.
+    time_range : (t_start, t_end) in seconds, optional
+        Restrict the time axis.  Shows the full series when *None*.
+    subsample_wn : int
+        Wavenumber downsampling factor (performance vs. resolution).
+    subsample_time : int
+        Time downsampling factor.
+    show_noise : bool
+        Include a noise / residual panel.
+    show_individual_fluorophores : bool
+        Add a second row of panels for each fluorophore component.
+    backend : {"matplotlib", "plotly"}
+        ``"matplotlib"`` → static / vector-graphics output.
+        ``"plotly"``     → interactive HTML.
+    elev, azim : float
+        Viewing elevation and azimuth in degrees (matplotlib only).
+    figsize_per_panel : (w, h) in inches
+        Size of each 3D panel (matplotlib only).
+    dpi : int
+        Figure resolution (matplotlib only).
+    cmap_observed, cmap_raman, cmap_fluorescence, cmap_noise : str
+        Matplotlib / Plotly colormap names for each component.
+    cmap_fluorophores : list of str, optional
+        Per-fluorophore colormaps.  Defaults to cycling ``_FLUORO_CMAPS``.
+    label_fontsize, title_fontsize : int
+        Font sizes for axis labels and panel titles (matplotlib only).
+    show_colorbar : bool
+        Attach a colorbar to every panel (matplotlib only).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure  or  plotly.graph_objects.Figure
+    """
+    # ------------------------------------------------------------------
+    # Unpack inputs
+    # ------------------------------------------------------------------
+    if hasattr(data, "intensities"):
+        Y = data.intensities          # [T, W]
+        time_values = data.time_values
+        wavenumbers = data.wavenumbers
+    else:
+        Y = np.asarray(data)
+        time_values = None
+        wavenumbers = None
+
+    raman = decomposition.raman.intensities                       # [W]
+    bases = decomposition.fluorophore_spectra.intensities         # [F, W]
+    rates = decomposition.rates                                   # [F]
+    abundances = (
+        decomposition.abundances
+        if decomposition.abundances is not None
+        else np.ones(len(rates))
+    )
+    n_t, n_wn = Y.shape
+    n_fluoro = len(rates)
+
+    if time_values is None:
+        time_values = np.arange(n_t, dtype=float)
+    if wavenumbers is None:
+        wavenumbers = np.arange(n_wn, dtype=float)
+
+    # ------------------------------------------------------------------
+    # Frame duration
+    # ------------------------------------------------------------------
+    frame_dur = decomposition.frame_duration
+    if frame_dur is None:
+        frame_dur = float(time_values[1] - time_values[0]) if n_t > 1 else 1.0
+
+    # ------------------------------------------------------------------
+    # Time-range slice
+    # ------------------------------------------------------------------
+    if time_range is not None:
+        t_lo, t_hi = time_range
+        mask = (time_values >= t_lo) & (time_values <= t_hi)
+        time_values = time_values[mask]
+        Y = Y[mask]
+    n_t = len(time_values)
+
+    # ------------------------------------------------------------------
+    # Compute component surfaces  [T, W]
+    # ------------------------------------------------------------------
+    reconstruction = decomposition.reconstruction(time_values)
+    raman_surface = np.tile(raman * frame_dur, (n_t, 1))
+    total_fluor = reconstruction - raman_surface
+    noise = Y - reconstruction
+
+    fluoro_surfaces = [
+        _compute_fluorophore_surface(bases, abundances, rates, time_values, frame_dur, i)
+        for i in range(n_fluoro)
+    ]
+
+    # ------------------------------------------------------------------
+    # Subsample
+    # ------------------------------------------------------------------
+    wn_idx = np.arange(0, n_wn, subsample_wn)
+    t_idx = np.arange(0, n_t, subsample_time)
+    wn_sub = wavenumbers[wn_idx]
+    t_sub = time_values[t_idx]
+
+    def _sub(Z: np.ndarray) -> np.ndarray:
+        return Z[np.ix_(t_idx, wn_idx)]
+
+    # ------------------------------------------------------------------
+    # Panel definitions
+    # ------------------------------------------------------------------
+    main_panels = [
+        ("Observed", _sub(Y), cmap_observed),
+        ("Raman", _sub(raman_surface), cmap_raman),
+        ("Fluorescence", _sub(total_fluor), cmap_fluorescence),
+    ]
+    if show_noise:
+        main_panels.append(("Noise", _sub(noise), cmap_noise))
+
+    if cmap_fluorophores is None:
+        cmap_fluorophores = [
+            _FLUORO_CMAPS[i % len(_FLUORO_CMAPS)] for i in range(n_fluoro)
+        ]
+
+    fluoro_panels: list = []
+    if show_individual_fluorophores:
+        taus = 1.0 / rates
+        for i, (Z, cmap_f) in enumerate(zip(fluoro_surfaces, cmap_fluorophores)):
+            fluoro_panels.append(
+                (f"Fluorophore {i + 1}  (τ = {taus[i]:.2f} s)", _sub(Z), cmap_f)
+            )
+
+    # ------------------------------------------------------------------
+    # Dispatch to backend
+    # ------------------------------------------------------------------
+    if backend == "plotly":
+        return _plot_components_3d_plotly(wn_sub, t_sub, main_panels, fluoro_panels)
+
+    return _plot_components_3d_mpl(
+        wn_sub, t_sub, main_panels, fluoro_panels,
+        elev, azim, figsize_per_panel, dpi,
+        label_fontsize, title_fontsize, show_colorbar,
+    )
