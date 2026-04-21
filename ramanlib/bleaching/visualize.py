@@ -2011,81 +2011,183 @@ def decomp_from_gt_dataset(
 # =============================================================================
 
 _NEURIPS_RC: dict = {
+    # NeurIPS figures: clean sans-serif, white ground, readable at column width
     "font.family": "sans-serif",
     "font.sans-serif": ["Helvetica Neue", "Arial", "DejaVu Sans"],
-    "font.size": 9,
-    "axes.labelsize": 8,
-    "axes.titlesize": 9,
+    "font.size": 12,
+    "axes.labelsize": 12,
+    "axes.titlesize": 14,
     "axes.titleweight": "bold",
-    "xtick.labelsize": 7,
-    "ytick.labelsize": 7,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
     "figure.dpi": 150,
     "figure.facecolor": "white",
 }
 
-# All dark at zero — no white wash-out when the signal decays toward 0.
-# magma:   black → deep violet → orange → cream  (dramatic, warm)
-# plasma:  dark navy → violet → yellow            (cooler, distinct from magma)
-# mako_r:  deep teal → lavender (seaborn; dark at low end)
-# crest:   seaborn sequential; dark teal at 0
+# =============================================================================
+# LUMOS custom colormaps
+# =============================================================================
+# All run from a rich dark anchor at 0 → saturated mid → muted pastel at max.
+# This means:
+#   • Decayed regions (low intensity) → distinctive dark colour, never white
+#   • Peak regions → professional pastel highlight
+#   • Each component has a clearly distinct hue family
 #
-# Fallback to matplotlib builtins if seaborn is absent.
-_FLUORO_CMAPS = ["magma", "plasma", "YlOrRd", "PuRd", "BuPu"]
+# Stops: list of (position 0–1, hex colour)
+# =============================================================================
+from matplotlib.colors import LinearSegmentedColormap as _LSC
 
-# Canonical Plotly colorscale names for each matplotlib cmap we use.
-_MPL_TO_PLOTLY: dict = {
-    "viridis":  "Viridis",
-    "magma":    "Magma",
-    "plasma":   "Plasma",
-    "inferno":  "Inferno",
-    "cividis":  "Cividis",
-    "YlOrRd":   "YlOrRd",
-    "PuRd":     "PuRd",
-    "BuPu":     "BuPu",
-    # legacy names kept for backwards compat
-    "Blues":    "Blues",
-    "Oranges":  "Oranges",
-    "RdBu":     "RdBu",
-    "Reds":     "Reds",
-    "Purples":  "Purples",
+_STOP_OBSERVED = [          # teal-green perceptual sequence (≈ viridis flavour)
+    (0.00, "#0d0221"),      # near-black purple
+    (0.25, "#1b4f72"),      # deep ocean blue
+    (0.55, "#1abc9c"),      # medium teal
+    (0.80, "#76d7c4"),      # soft mint
+    (1.00, "#d5f5e3"),      # pale mint (NOT white)
+]
+_STOP_RAMAN = [             # slate-blue family  (cool, steady — Raman is constant)
+    (0.00, "#0b1629"),      # near-black navy
+    (0.30, "#1a3a6e"),      # deep navy
+    (0.60, "#4a86c8"),      # mid cornflower blue
+    (0.85, "#93bce0"),      # powder blue
+    (1.00, "#d6e9f8"),      # pale sky (NOT white)
+]
+_STOP_FLUOR = [             # amber-rose family  (warm, decaying)
+    (0.00, "#2b0a0a"),      # near-black burgundy
+    (0.30, "#8b1a1a"),      # deep crimson
+    (0.60, "#e06c3a"),      # warm amber-orange
+    (0.85, "#f4a97c"),      # light peach
+    (1.00, "#fde8d8"),      # pale blush (NOT white)
+]
+_STOP_NOISE = None          # diverging — built separately below
+_STOP_F = [                 # per-fluorophore: 5 distinct hue families
+    [                       # F1 — violet / lavender
+        (0.00, "#120922"),  (0.30, "#4a1a7a"),
+        (0.60, "#8e5bbf"),  (0.85, "#c39ee0"),  (1.00, "#ead6f5"),
+    ],
+    [                       # F2 — emerald / sage
+        (0.00, "#041a10"),  (0.30, "#0e6644"),
+        (0.60, "#27ae7a"),  (0.85, "#7dcfaf"),  (1.00, "#c8f0e0"),
+    ],
+    [                       # F3 — rose / coral
+        (0.00, "#1f0510"),  (0.30, "#7b1450"),
+        (0.60, "#c94f8a"),  (0.85, "#e89ec4"),  (1.00, "#f8d7ea"),
+    ],
+    [                       # F4 — gold / amber
+        (0.00, "#1a0f00"),  (0.30, "#7a4000"),
+        (0.60, "#d4820a"),  (0.85, "#f0bc6a"),  (1.00, "#fde9b8"),
+    ],
+    [                       # F5 — teal / cyan
+        (0.00, "#011318"),  (0.30, "#0a4f5e"),
+        (0.60, "#1a9aaa"),  (0.85, "#72ccd6"),  (1.00, "#c5eef2"),
+    ],
+]
+
+
+def _stops_to_mpl(name: str, stops: list) -> _LSC:
+    """Build a matplotlib LinearSegmentedColormap from (pos, hex) stops."""
+    colours = [c for _, c in stops]
+    positions = [p for p, _ in stops]
+    from matplotlib.colors import to_rgb
+    nodes = list(zip(positions, [to_rgb(c) for c in colours]))
+    return _LSC.from_list(name, nodes)
+
+
+def _stops_to_plotly(stops: list) -> list:
+    """Convert (pos, hex) stops to a Plotly colorscale list."""
+    from matplotlib.colors import to_rgb
+    out = []
+    for pos, hexc in stops:
+        r, g, b = [int(x * 255) for x in to_rgb(hexc)]
+        out.append([pos, f"rgb({r},{g},{b})"])
+    return out
+
+
+# Register matplotlib colormaps (safe to call multiple times)
+_CM_OBSERVED = _stops_to_mpl("lumos_observed", _STOP_OBSERVED)
+_CM_RAMAN    = _stops_to_mpl("lumos_raman",    _STOP_RAMAN)
+_CM_FLUOR    = _stops_to_mpl("lumos_fluor",    _STOP_FLUOR)
+_CM_FS       = [_stops_to_mpl(f"lumos_f{i+1}", s) for i, s in enumerate(_STOP_F)]
+
+# Diverging noise map: deep teal ← 0 → muted rose  (stays off-white at centre)
+_CM_NOISE = _LSC.from_list(
+    "lumos_noise",
+    [(0.0, "#0b3d40"), (0.35, "#2a9da8"), (0.5, "#e8e8ee"),
+     (0.65, "#c86090"), (1.0, "#4a0a26")],
+)
+
+for _cm in [_CM_OBSERVED, _CM_RAMAN, _CM_FLUOR, _CM_NOISE] + _CM_FS:
+    try:
+        plt.colormaps.register(_cm, force=True)
+    except AttributeError:
+        import matplotlib as _mpl
+        _mpl.cm.register_cmap(cmap=_cm)
+
+# Plotly equivalents (built from the same stops)
+_PX_OBSERVED = _stops_to_plotly(_STOP_OBSERVED)
+_PX_RAMAN    = _stops_to_plotly(_STOP_RAMAN)
+_PX_FLUOR    = _stops_to_plotly(_STOP_FLUOR)
+_PX_NOISE    = [[0.0, "rgb(11,61,64)"],  [0.35, "rgb(42,157,168)"],
+                [0.5,  "rgb(232,232,238)"], [0.65, "rgb(200,96,144)"],
+                [1.0,  "rgb(74,10,38)"]]
+_PX_FS       = [_stops_to_plotly(s) for s in _STOP_F]
+
+# Name → Plotly colorscale registry (handles both custom and built-in names)
+_MPL_TO_PLOTLY_SCALE: dict = {
+    "lumos_observed": _PX_OBSERVED,
+    "lumos_raman":    _PX_RAMAN,
+    "lumos_fluor":    _PX_FLUOR,
+    "lumos_noise":    _PX_NOISE,
+    **{f"lumos_f{i+1}": _PX_FS[i] for i in range(len(_PX_FS))},
+    # Built-in pass-throughs (kept for backwards compat / user overrides)
+    "viridis": "Viridis", "magma": "Magma", "plasma": "Plasma",
+    "inferno": "Inferno", "cividis": "Cividis",
+    "RdBu": "RdBu", "Blues": "Blues", "Oranges": "Oranges",
 }
 
+# Names used by _FLUORO_CMAPS (cycled across fluorophores)
+_FLUORO_CMAPS = [f"lumos_f{i+1}" for i in range(len(_STOP_F))]
+
 # Shared scene styling applied to every Plotly 3-D subplot.
+# Axis convention: X = Wavenumber (cm⁻¹), Y = Time (s, t=0 at front),
+#                  Z = Intensity.  Camera is front-right-above so the
+#                  spectrum runs left→right and the decay recedes backward.
 _PLOTLY_SCENE: dict = dict(
     xaxis=dict(
-        title="Time (s)",
-        showgrid=True, gridcolor="rgba(200,200,200,0.5)",
-        backgroundcolor="rgba(240,240,240,0.3)",
+        title="Wavenumber (cm⁻¹)",
+        showgrid=True, gridcolor="rgba(180,180,190,0.5)",
+        backgroundcolor="rgba(235,237,242,0.5)",
         showbackground=True,
-        tickfont=dict(size=9),
-        titlefont=dict(size=10),
-        ticks="outside", ticklen=3,
+        tickfont=dict(size=11, color="#333"),
+        titlefont=dict(size=13, color="#111"),
+        ticks="outside", ticklen=4,
     ),
     yaxis=dict(
-        title="Wavenumber (cm⁻¹)",
-        showgrid=True, gridcolor="rgba(200,200,200,0.5)",
-        backgroundcolor="rgba(240,240,240,0.3)",
+        title="Time (s)",
+        showgrid=True, gridcolor="rgba(180,180,190,0.5)",
+        backgroundcolor="rgba(235,237,242,0.5)",
         showbackground=True,
-        tickfont=dict(size=9),
-        titlefont=dict(size=10),
-        ticks="outside", ticklen=3,
+        tickfont=dict(size=11, color="#333"),
+        titlefont=dict(size=13, color="#111"),
+        ticks="outside", ticklen=4,
     ),
     zaxis=dict(
         title="Intensity",
-        showgrid=True, gridcolor="rgba(200,200,200,0.5)",
-        backgroundcolor="rgba(248,248,248,0.4)",
+        showgrid=True, gridcolor="rgba(180,180,190,0.5)",
+        backgroundcolor="rgba(242,242,246,0.6)",
         showbackground=True,
-        tickfont=dict(size=9),
-        titlefont=dict(size=10),
-        ticks="outside", ticklen=3,
+        tickfont=dict(size=11, color="#333"),
+        titlefont=dict(size=13, color="#111"),
+        ticks="outside", ticklen=4,
     ),
-    camera=dict(eye=dict(x=-1.6, y=-1.2, z=1.0)),
+    # Front-right-above: spectrum runs left→right, decay goes into the page
+    camera=dict(eye=dict(x=1.6, y=-1.8, z=1.1)),
     aspectmode="auto",
 )
 
 
-def _mpl_to_plotly_cmap(name: str) -> str:
-    return _MPL_TO_PLOTLY.get(name, name)
+def _mpl_to_plotly_cmap(name: str):
+    """Return a Plotly colorscale (string name or [[pos, colour]] list)."""
+    return _MPL_TO_PLOTLY_SCALE.get(name, name)
 
 
 def _plotly_scene(camera_eye: Optional[dict] = None) -> dict:
@@ -2119,23 +2221,23 @@ def _style_3d_ax(
     label_fontsize: int,
     title_fontsize: int,
 ) -> None:
-    """Apply consistent NeurIPS-style formatting to a 3-D matplotlib axis.
+    """Apply NeurIPS-style formatting to a 3-D matplotlib axis.
 
-    Axis convention: X = Time (left→right, decay starts left),
-                     Y = Wavenumber (depth), Z = Intensity.
+    Axis convention: X = Wavenumber (cm⁻¹, left→right),
+                     Y = Time (s, front→back, t=0 at front),
+                     Z = Intensity.
     """
-    ax.set_xlabel("Time (s)", fontsize=label_fontsize, labelpad=4)
-    ax.set_ylabel("Wavenumber (cm⁻¹)", fontsize=label_fontsize, labelpad=4)
-    ax.set_zlabel("Intensity", fontsize=label_fontsize, labelpad=4)
-    ax.set_title(title, fontsize=title_fontsize, pad=8, fontweight="bold")
-    ax.tick_params(labelsize=6, pad=1, length=2)
-    # Subtle filled panes give depth without distracting
+    ax.set_xlabel("Wavenumber (cm⁻¹)", fontsize=label_fontsize, labelpad=6)
+    ax.set_ylabel("Time (s)", fontsize=label_fontsize, labelpad=6)
+    ax.set_zlabel("Intensity", fontsize=label_fontsize, labelpad=6)
+    ax.set_title(title, fontsize=title_fontsize, pad=10, fontweight="bold")
+    ax.tick_params(labelsize=label_fontsize - 3, pad=2, length=3)
     for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
         pane.fill = True
-        pane.set_facecolor((0.95, 0.95, 0.97, 0.5))
-        pane.set_edgecolor((0.8, 0.8, 0.85, 1.0))
-        pane.set_linewidth(0.4)
-    ax.grid(True, alpha=0.25, linewidth=0.35)
+        pane.set_facecolor((0.93, 0.94, 0.97, 0.6))
+        pane.set_edgecolor((0.75, 0.77, 0.82, 1.0))
+        pane.set_linewidth(0.5)
+    ax.grid(True, alpha=0.3, linewidth=0.4)
 
 
 def _plot_components_3d_mpl(
@@ -2158,14 +2260,12 @@ def _plot_components_3d_mpl(
     n_rows = 1 + (1 if n_fluoro > 0 else 0)
     n_cols = max(n_main, n_fluoro) if n_fluoro > 0 else n_main
 
-    # X = Time (left→right), Y = Wavenumber (depth).
-    # meshgrid(t_sub, wn_sub) → both (W, T); Z must be transposed to (W, T).
-    TG, WN = np.meshgrid(t_sub, wn_sub)
-    # Use ALL subsampled points — rcount/ccount must match the data grid or
-    # matplotlib draws only a fraction of polygons, leaving visible gaps on
-    # flat / slowly-varying surfaces (e.g. the Raman constant component).
-    rcount = len(wn_sub)
-    ccount = len(t_sub)
+    # X = Wavenumber (left→right), Y = Time (front→back, t=0 at front).
+    # meshgrid(wn_sub, t_sub) → WN shape (T, W), TG shape (T, W).
+    # Z [T, W] maps directly — no transpose needed.
+    WN, TG = np.meshgrid(wn_sub, t_sub)
+    rcount = len(t_sub)    # rows vary over Y (time)
+    ccount = len(wn_sub)   # cols vary over X (wavenumber)
 
     fw = figsize_per_panel[0] * n_cols
     fh = figsize_per_panel[1] * n_rows
@@ -2176,19 +2276,18 @@ def _plot_components_3d_mpl(
         def _add(row: int, col: int, title: str, Z: np.ndarray, cmap: str) -> None:
             ax = fig.add_subplot(n_rows, n_cols, (row - 1) * n_cols + col, projection="3d")
             surf = ax.plot_surface(
-                TG, WN, Z.T,          # Z [T, W] → .T gives [W, T] to match meshgrid
+                WN, TG, Z,            # Z [T, W] matches meshgrid(wn, t) → (T, W)
                 cmap=cmap,
                 linewidth=0,
-                antialiased=True,
-                alpha=0.92,
+                antialiased=False,    # False = flat cartoon polygons, no AA shimmer
+                alpha=1.0,
                 rcount=rcount,
                 ccount=ccount,
-                shade=True,
+                shade=False,          # flat per-face colour — cartoon look
             )
             if show_colorbar:
-                fig.colorbar(surf, ax=ax, shrink=0.40, pad=0.04, aspect=16,
-                             format="%.0f",
-                             ticks=plt.MaxNLocator(4))
+                fig.colorbar(surf, ax=ax, shrink=0.38, pad=0.04, aspect=18,
+                             format="%.0f", ticks=plt.MaxNLocator(4))
             ax.view_init(elev=elev, azim=azim)
             _style_3d_ax(ax, title, label_fontsize, title_fontsize)
 
@@ -2230,21 +2329,22 @@ def _plot_components_3d_plotly(
         subplot_titles=subplot_titles,
     )
 
-    # X = Time (left→right), Y = Wavenumber, consistent with matplotlib layout.
-    # Z transposed to (W, T) so rows vary over Y (wavenumber).
-    _lighting = dict(ambient=0.6, diffuse=0.8, specular=0.15,
-                     roughness=0.6, fresnel=0.1)
+    # X = Wavenumber (left→right), Y = Time (front→back, t=0 at front).
+    # Z [T, W] maps directly to go.Surface(x=wn, y=t, z=Z).
+    # Flat shading + ambient-only light = clean cartoon appearance.
+    _lighting = dict(ambient=1.0, diffuse=0.0, specular=0.0,
+                     roughness=1.0, fresnel=0.0)
 
     def _add_trace(row: int, col: int, title: str, Z: np.ndarray, cmap: str) -> None:
         fig.add_trace(
             go.Surface(
-                x=t_sub, y=wn_sub, z=Z.T,
+                x=wn_sub, y=t_sub, z=Z,
                 colorscale=_mpl_to_plotly_cmap(cmap),
                 showscale=False,
                 name=title,
                 opacity=1.0,
+                flatshading=True,
                 lighting=_lighting,
-                lightposition=dict(x=1, y=1, z=2),
             ),
             row=row, col=col,
         )
@@ -2282,14 +2382,14 @@ def plot_data_3d(
     subsample_wn: int = 2,
     subsample_time: int = 1,
     backend: str = "matplotlib",
-    elev: float = 25.0,
-    azim: float = -55.0,
-    figsize: Tuple[float, float] = (5.0, 4.0),
+    elev: float = 22.0,
+    azim: float = -50.0,
+    figsize: Tuple[float, float] = (5.5, 4.5),
     dpi: int = 150,
-    cmap: str = "viridis",
+    cmap: str = "lumos_observed",
     title: str = "Observed time series",
-    label_fontsize: int = 8,
-    title_fontsize: int = 9,
+    label_fontsize: int = 12,
+    title_fontsize: int = 14,
     show_colorbar: bool = True,
 ) -> "Figure":
     """
@@ -2365,60 +2465,59 @@ def plot_data_3d(
 
     if backend == "plotly":
         import plotly.graph_objects as go
-        _lighting = dict(ambient=0.6, diffuse=0.8, specular=0.15,
-                         roughness=0.6, fresnel=0.1)
+        # Flat shading + ambient-only = cartoon look, no specular glare
+        _lighting = dict(ambient=1.0, diffuse=0.0, specular=0.0,
+                         roughness=1.0, fresnel=0.0)
         fig = go.Figure(
             go.Surface(
-                x=t_sub, y=wn_sub, z=Z.T,
+                x=wn_sub, y=t_sub, z=Z,   # X=Wavenumber, Y=Time, no transpose
                 colorscale=_mpl_to_plotly_cmap(cmap),
                 opacity=1.0,
+                flatshading=True,
                 lighting=_lighting,
-                lightposition=dict(x=1, y=1, z=2),
                 showscale=show_colorbar,
                 colorbar=dict(
-                    title=dict(text="Intensity", font=dict(size=10)),
-                    tickfont=dict(size=9),
-                    thickness=12, len=0.6,
+                    title=dict(text="Intensity", font=dict(size=13)),
+                    tickfont=dict(size=11),
+                    thickness=14, len=0.65,
                 ) if show_colorbar else None,
             )
         )
         fig.update_layout(
             scene=_plotly_scene(),
-            title=dict(text=f"<b>{title}</b>", font=dict(size=13), x=0.5,
+            title=dict(text=f"<b>{title}</b>", font=dict(size=15), x=0.5,
                        xanchor="center"),
-            width=700,
-            height=560,
-            margin=dict(l=10, r=10, t=50, b=10),
-            font=dict(family="Arial, Helvetica, sans-serif", size=11,
+            width=750,
+            height=600,
+            margin=dict(l=10, r=10, t=55, b=10),
+            font=dict(family="Arial, Helvetica, sans-serif", size=13,
                       color="#222222"),
             paper_bgcolor="white",
         )
         return fig
 
-    # matplotlib — X = Time (left→right), Y = Wavenumber (depth)
+    # matplotlib — X = Wavenumber (left→right), Y = Time (front→back)
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-    TG, WN = np.meshgrid(t_sub, wn_sub)       # both (W, T)
-    # rcount/ccount = actual grid size — avoids polygon gaps on solid surfaces
-    rcount = len(wn_sub)
-    ccount = len(t_sub)
+    WN, TG = np.meshgrid(wn_sub, t_sub)       # both (T, W)
+    rcount = len(t_sub)
+    ccount = len(wn_sub)
 
     with plt.rc_context(_NEURIPS_RC):
         fig = plt.figure(figsize=figsize, dpi=dpi, facecolor="white")
         ax = fig.add_subplot(1, 1, 1, projection="3d")
         surf = ax.plot_surface(
-            TG, WN, Z.T,               # Z [T, W] → .T gives [W, T]
+            WN, TG, Z,                 # Z [T, W] matches meshgrid(wn, t) → (T, W)
             cmap=cmap,
             linewidth=0,
-            antialiased=True,
-            alpha=0.92,
+            antialiased=False,
+            alpha=1.0,
             rcount=rcount,
             ccount=ccount,
-            shade=True,
+            shade=False,
         )
         if show_colorbar:
-            fig.colorbar(surf, ax=ax, shrink=0.40, pad=0.04, aspect=16,
-                         format="%.0f",
-                         ticks=plt.MaxNLocator(4))
+            fig.colorbar(surf, ax=ax, shrink=0.38, pad=0.04, aspect=18,
+                         format="%.0f", ticks=plt.MaxNLocator(4))
         ax.view_init(elev=elev, azim=azim)
         _style_3d_ax(ax, title, label_fontsize, title_fontsize)
         plt.tight_layout(pad=1.2)
@@ -2434,17 +2533,17 @@ def plot_components_3d(
     show_noise: bool = True,
     show_individual_fluorophores: bool = True,
     backend: str = "matplotlib",
-    elev: float = 25.0,
-    azim: float = -55.0,
-    figsize_per_panel: Tuple[float, float] = (3.5, 3.2),
+    elev: float = 22.0,
+    azim: float = -50.0,
+    figsize_per_panel: Tuple[float, float] = (4.0, 3.6),
     dpi: int = 150,
-    cmap_observed: str = "viridis",
-    cmap_raman: str = "cividis",
-    cmap_fluorescence: str = "inferno",
-    cmap_noise: str = "RdBu",
+    cmap_observed: str = "lumos_observed",
+    cmap_raman: str = "lumos_raman",
+    cmap_fluorescence: str = "lumos_fluor",
+    cmap_noise: str = "lumos_noise",
     cmap_fluorophores: Optional[list] = None,
-    label_fontsize: int = 8,
-    title_fontsize: int = 9,
+    label_fontsize: int = 12,
+    title_fontsize: int = 14,
     show_colorbar: bool = True,
 ) -> "Figure":
     """
