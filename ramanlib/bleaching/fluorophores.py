@@ -91,7 +91,11 @@ class FluorophoreLoader:
                 "fluorophore_name": (("sample",), names),
             },
             coords={axis_name: axis, "sample": np.arange(len(names))},
-            attrs={"source": str(self.csv_path), "laser_nm": self.laser_nm, "axis_units": axis_units},
+            attrs={
+                "source": str(self.csv_path),
+                "laser_nm": self.laser_nm,
+                "axis_units": axis_units,
+            },
         )
 
 
@@ -136,7 +140,9 @@ def generate_synthetic_fluorophores(
     if seed is not None:
         np.random.seed(seed)
 
-    wavelengths = np.linspace(wavelength_range[0], wavelength_range[1], n_wavelength_points)
+    wavelengths = np.linspace(
+        wavelength_range[0], wavelength_range[1], n_wavelength_points
+    )
     all_data = []
 
     for i in range(n_fluorophores):
@@ -154,7 +160,10 @@ def generate_synthetic_fluorophores(
         sigma_ex = ex_fwhm / 2.355
         excitation_efficiency = np.exp(-((laser_nm - ex_max) ** 2) / (2 * sigma_ex**2))
 
-        if excitation_efficiency < min_excitation_efficiency or abs(em_max - laser_nm) < min_separation:
+        if (
+            excitation_efficiency < min_excitation_efficiency
+            or abs(em_max - laser_nm) < min_separation
+        ):
             continue
 
         sigma_em = em_fwhm / 2.355
@@ -249,7 +258,7 @@ def load_fluorophores(
     laser_nm: float = 532.0,
     crop_range: Optional[Tuple[float, float]] = None,
     use_wavenumber: bool = True,
-    filter_bad: bool = True,
+    filter_bad: bool = False,
     min_quality: float = 0.1,
     n_synthetic: Optional[int] = None,
     synthetic_seed: Optional[int] = None,
@@ -285,7 +294,7 @@ def load_fluorophores(
         if n_synthetic is None:
             raise ValueError("Either csv_path or n_synthetic must be specified")
 
-        df = generate_synthetic_fluorophores( # TODO: Use correct axis for synthetic spectra
+        df = generate_synthetic_fluorophores(  # TODO: Use correct axis for synthetic spectra
             n_fluorophores=n_synthetic * 4,
             laser_nm=laser_nm,
             min_excitation_efficiency=0.05,
@@ -301,7 +310,9 @@ def load_fluorophores(
         return ds
     else:
         loader = FluorophoreLoader(csv_path, laser_nm=laser_nm)
-        ds = loader.to_xarray(use_wavenumber=use_wavenumber, crop_range=crop_range, normalize=False)
+        ds = loader.to_xarray(
+            use_wavenumber=use_wavenumber, crop_range=crop_range, normalize=False
+        )
         if filter_bad:
             ds = filter_bad_fluorophores(
                 ds,

@@ -162,16 +162,26 @@ def visualise_decomposition(
     #   Synthetic data (GT provided): compare extracted Raman rate vs true GT Raman.
     if reference_raman is None:
         # Both observed and reconstructed at the identical last time point.
-        plot2_observed  = Y[-1]              # raw ADU at t_last
-        plot2_predicted = reconstruction[-1] # model ADU at t_last
-        plot2_obs_label  = f"Observed (t={time_values[-1]:.2f}s)" if time_values is not None else "Observed (last frame)"
-        plot2_pred_label = f"Reconstruction (t={time_values[-1]:.2f}s)" if time_values is not None else "Reconstruction (last frame)"
+        plot2_observed = Y[-1]  # raw ADU at t_last
+        plot2_predicted = reconstruction[-1]  # model ADU at t_last
+        plot2_obs_label = (
+            f"Observed (t={time_values[-1]:.2f}s)"
+            if time_values is not None
+            else "Observed (last frame)"
+        )
+        plot2_pred_label = (
+            f"Reconstruction (t={time_values[-1]:.2f}s)"
+            if time_values is not None
+            else "Reconstruction (last frame)"
+        )
         plot2_title_prefix = "Last-frame comparison"
-        print("No reference Raman provided — comparing observed vs reconstructed at last time point.")
+        print(
+            "No reference Raman provided — comparing observed vs reconstructed at last time point."
+        )
     else:
-        plot2_observed  = reference_raman * frame_dur  # GT counts/sec → counts/frame
-        plot2_predicted = raman_per_frame              # extracted Raman counts/frame
-        plot2_obs_label  = "Ground Truth Raman"
+        plot2_observed = reference_raman * frame_dur  # GT counts/sec → counts/frame
+        plot2_predicted = raman_per_frame  # extracted Raman counts/frame
+        plot2_obs_label = "Ground Truth Raman"
         plot2_pred_label = "Predicted Raman"
         plot2_title_prefix = "Extracted Raman Spectrum"
 
@@ -389,15 +399,35 @@ def visualise_decomposition(
     # Predicted Raman appears as a constant floor; subtracting it from the
     # observed profile gives an estimate of the GT fluorescence decay.
     raman_floor = float(raman_per_frame.mean())
-    gt_profile = Y.mean(axis=1)           # [T] observed total (ADU)
+    gt_profile = Y.mean(axis=1)  # [T] observed total (ADU)
     gt_fluor_est = gt_profile - raman_floor  # observed minus predicted Raman floor
 
-    ax.plot(time_values, gt_profile, color="dimgray", linewidth=1.5,
-            linestyle=":", alpha=0.85, label="GT total (wn avg)")
-    ax.axhline(raman_floor, color="steelblue", linestyle="--", linewidth=1.2,
-               alpha=0.7, label=f"Pred. Raman floor ({raman_floor:.1f})")
-    ax.plot(time_values, gt_fluor_est, color="tomato", linewidth=1.5,
-            linestyle=":", alpha=0.85, label="GT − Raman (≈ fluor.)")
+    ax.plot(
+        time_values,
+        gt_profile,
+        color="dimgray",
+        linewidth=1.5,
+        linestyle=":",
+        alpha=0.85,
+        label="GT total (wn avg)",
+    )
+    ax.axhline(
+        raman_floor,
+        color="steelblue",
+        linestyle="--",
+        linewidth=1.2,
+        alpha=0.7,
+        label=f"Pred. Raman floor ({raman_floor:.1f})",
+    )
+    ax.plot(
+        time_values,
+        gt_fluor_est,
+        color="tomato",
+        linewidth=1.5,
+        linestyle=":",
+        alpha=0.85,
+        label="GT − Raman (≈ fluor.)",
+    )
 
     _add_train_cutoff(ax)
     if t_train_cutoff is not None:
@@ -413,10 +443,21 @@ def visualise_decomposition(
     ax = axes[1, 1]
     ax.plot(wavenumbers, Y[0], "r--", linewidth=1.5, alpha=0.6, label="Observed (t=0)")
     if Y_clean is not None:
-        ax.plot(wavenumbers, Y_clean[0], "g--", linewidth=1.5, alpha=0.8,
-                label="Clean (t=0)")
-    ax.plot(wavenumbers, reconstruction[0], color=_COLORS[0], linewidth=1.5,
-            label="Reconstructed (t=0)")
+        ax.plot(
+            wavenumbers,
+            Y_clean[0],
+            "g--",
+            linewidth=1.5,
+            alpha=0.8,
+            label="Clean (t=0)",
+        )
+    ax.plot(
+        wavenumbers,
+        reconstruction[0],
+        color=_COLORS[0],
+        linewidth=1.5,
+        label="Reconstructed (t=0)",
+    )
     t0_mse = float(np.mean((Y[0] - reconstruction[0]) ** 2))
     title_mse = f"Reconstruction (t=0)  MSE={t0_mse:.2f}"
     if Y_clean is not None:
@@ -580,15 +621,20 @@ def plot_parameter_detail(
                 corr_matrix[i, j] = c if np.isfinite(c) else 0.0
         used_refs: set = set()
         for p in np.argsort(-corr_matrix.max(axis=1)):
-            available = [(j, corr_matrix[p, j]) for j in range(n_ref) if j not in used_refs]
+            available = [
+                (j, corr_matrix[p, j]) for j in range(n_ref) if j not in used_refs
+            ]
             if available:
                 best_j, best_c = max(available, key=lambda x: x[1])
                 pred_to_ref[p] = (best_j, float(best_c))
                 used_refs.add(best_j)
 
     pred_colors = [
-        _COLORS[pred_to_ref[i][0] % len(_COLORS)] if pred_to_ref[i][0] is not None
-        else _COLORS[i % len(_COLORS)]
+        (
+            _COLORS[pred_to_ref[i][0] % len(_COLORS)]
+            if pred_to_ref[i][0] is not None
+            else _COLORS[i % len(_COLORS)]
+        )
         for i in range(n_fluorophores)
     ]
     ref_colors = [_COLORS[j % len(_COLORS)] for j in range(n_ref)]
@@ -603,18 +649,33 @@ def plot_parameter_detail(
         ax_corr.set_xticklabels(
             [f"GT B{j+1}" for j in range(n_ref)], rotation=45, ha="right", fontsize=9
         )
-        ax_corr.set_yticklabels([f"Pred B{i+1}" for i in range(n_fluorophores)], fontsize=9)
+        ax_corr.set_yticklabels(
+            [f"Pred B{i+1}" for i in range(n_fluorophores)], fontsize=9
+        )
         for i in range(n_fluorophores):
             for j in range(n_ref):
                 text_color = "white" if abs(corr_matrix[i, j]) > 0.6 else "black"
-                ax_corr.text(j, i, f"{corr_matrix[i, j]:.2f}",
-                             ha="center", va="center", fontsize=9, color=text_color)
+                ax_corr.text(
+                    j,
+                    i,
+                    f"{corr_matrix[i, j]:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=9,
+                    color=text_color,
+                )
         plt.colorbar(im, ax=ax_corr, shrink=0.8, label="Pearson r")
         ax_corr.set_title("Basis Correlation (Pred vs GT)")
         ax_corr.set_xlabel("GT Bases")
         ax_corr.set_ylabel("Predicted Bases")
     else:
-        ax_corr.bar(range(n_fluorophores), rates, color=pred_colors, edgecolor="k", linewidth=0.5)
+        ax_corr.bar(
+            range(n_fluorophores),
+            rates,
+            color=pred_colors,
+            edgecolor="k",
+            linewidth=0.5,
+        )
         ax_corr.set_xticks(range(n_fluorophores))
         ax_corr.set_xticklabels([f"B{i+1}" for i in range(n_fluorophores)], fontsize=9)
         ax_corr.set_xlabel("Component")
@@ -635,12 +696,27 @@ def plot_parameter_detail(
                 pair_labels.append(f"B{p+1}→GT{ref_j+1}")
         for ax, xs, ys, xlabel, ylabel, title in [
             (ax_r, gt_r, pred_r, "GT λ (s⁻¹)", "Predicted λ (s⁻¹)", "Decay Rate"),
-            (ax_a, gt_a, pred_a, "GT abundance w", "Predicted abundance w", "Abundance"),
+            (
+                ax_a,
+                gt_a,
+                pred_a,
+                "GT abundance w",
+                "Predicted abundance w",
+                "Abundance",
+            ),
         ]:
             if xs:
                 for x, y, c, lbl in zip(xs, ys, pair_cols, pair_labels):
-                    ax.scatter(x, y, color=c, s=110, zorder=5, edgecolors="k", linewidths=0.5)
-                    ax.annotate(lbl, (x, y), textcoords="offset points", xytext=(5, 4), fontsize=7)
+                    ax.scatter(
+                        x, y, color=c, s=110, zorder=5, edgecolors="k", linewidths=0.5
+                    )
+                    ax.annotate(
+                        lbl,
+                        (x, y),
+                        textcoords="offset points",
+                        xytext=(5, 4),
+                        fontsize=7,
+                    )
                 lo, hi = 0.0, float(max(max(xs), max(ys))) * 1.2
                 ax.plot([lo, hi], [lo, hi], "k--", linewidth=1, alpha=0.5, label="1:1")
                 ax.set_xlim(lo, hi)
@@ -652,14 +728,26 @@ def plot_parameter_detail(
             ax.grid(True, alpha=0.3)
             ax.set_aspect("equal", adjustable="box")
     else:
-        ax_r.bar(range(n_fluorophores), abundances, color=pred_colors, edgecolor="k", linewidth=0.5)
+        ax_r.bar(
+            range(n_fluorophores),
+            abundances,
+            color=pred_colors,
+            edgecolor="k",
+            linewidth=0.5,
+        )
         ax_r.set_xticks(range(n_fluorophores))
         ax_r.set_xticklabels([f"B{i+1}" for i in range(n_fluorophores)], fontsize=9)
         ax_r.set_xlabel("Component")
         ax_r.set_ylabel("Abundance w")
         ax_r.set_title("Predicted Abundances")
         ax_r.grid(True, alpha=0.3, axis="y")
-        ax_a.bar(range(n_fluorophores), 1.0 / rates, color=pred_colors, edgecolor="k", linewidth=0.5)
+        ax_a.bar(
+            range(n_fluorophores),
+            1.0 / rates,
+            color=pred_colors,
+            edgecolor="k",
+            linewidth=0.5,
+        )
         ax_a.set_xticks(range(n_fluorophores))
         ax_a.set_xticklabels([f"B{i+1}" for i in range(n_fluorophores)], fontsize=9)
         ax_a.set_xlabel("Component")
@@ -1648,19 +1736,19 @@ def plot_raman_posterior(
     sample_alpha : float
         Per-trace opacity. 200 traces at 0.15 gives good density impression.
     """
-    raman = ensemble["raman"] * frame_duration   # [N, W] counts/frame
+    raman = ensemble["raman"] * frame_duration  # [N, W] counts/frame
     ref = reference_raman * frame_duration if reference_raman is not None else None
 
     p_lo, p_mid, p_hi = percentiles
-    q_lo  = np.percentile(raman, p_lo,  axis=0)   # (W,)
-    median = np.percentile(raman, p_mid, axis=0)   # (W,)
-    q_hi  = np.percentile(raman, p_hi,  axis=0)   # (W,)
-    mean  = raman.mean(axis=0)                      # (W,)
-    std   = raman.std(axis=0, ddof=1)               # (W,)
+    q_lo = np.percentile(raman, p_lo, axis=0)  # (W,)
+    median = np.percentile(raman, p_mid, axis=0)  # (W,)
+    q_hi = np.percentile(raman, p_hi, axis=0)  # (W,)
+    mean = raman.mean(axis=0)  # (W,)
+    std = raman.std(axis=0, ddof=1)  # (W,)
 
     N = len(raman)
     _BLUE = "#4477AA"
-    _REF  = "crimson"
+    _REF = "crimson"
 
     title_base = f"N={N}  |  p{p_lo:.0f}/p{p_mid:.0f}/p{p_hi:.0f}"
     if sample_id is not None:
@@ -1668,8 +1756,16 @@ def plot_raman_posterior(
 
     def _ref_line(ax):
         if ref is not None:
-            ax.plot(wavenumbers, ref, color=_REF, linewidth=1.8, linestyle="--",
-                    label="Ground truth", zorder=7)
+            ax.plot(
+                wavenumbers,
+                ref,
+                color=_REF,
+                linewidth=1.8,
+                linestyle="--",
+                label="Ground truth",
+                zorder=7,
+            )
+
     def _axis_labels(ax):
         ax.set_xlabel("Wavenumber (cm⁻¹)")
         ax.set_ylabel("Intensity (counts/frame)")
@@ -1690,9 +1786,23 @@ def plot_raman_posterior(
     fig_overlay, ax = plt.subplots(figsize=figsize)
     for trace in raman:
         ax.plot(wavenumbers, trace, color=_BLUE, alpha=sample_alpha, linewidth=0.8)
-    ax.fill_between(wavenumbers, q_lo, q_hi, alpha=0.30, color=_BLUE,
-                    label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band")
-    ax.plot(wavenumbers, mean, color=_BLUE, linewidth=2.0, label="Posterior mean", zorder=6)
+    ax.fill_between(
+        wavenumbers,
+        q_lo,
+        q_hi,
+        alpha=0.30,
+        color=_BLUE,
+        label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band",
+    )
+    ax.plot(
+        wavenumbers,
+        mean,
+        color=_BLUE,
+        linewidth=2.0,
+        label="Posterior mean",
+        zorder=6,
+        alpha=0.1,
+    )
     _ref_line(ax)
     _axis_labels(ax)
     ax.set_title(f"Draws + credible band  |  {title_base}")
@@ -1701,13 +1811,32 @@ def plot_raman_posterior(
 
     # ── Fig 3: clean credible tube ────────────────────────────────────────────
     fig_tube, ax = plt.subplots(figsize=figsize)
-    ax.fill_between(wavenumbers, q_lo, q_hi, alpha=0.20, color=_BLUE,
-                    label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band")
-    ax.fill_between(wavenumbers, mean - n_sigma * std, mean + n_sigma * std,
-                    alpha=0.35, color=_BLUE, label=f"Mean ± {n_sigma:.0f}σ")
-    ax.plot(wavenumbers, mean,   color=_BLUE,        linewidth=2.0, label="Posterior mean")
-    ax.plot(wavenumbers, median, color="darkorange",  linewidth=1.5, linestyle="-.",
-            label=f"Median (p{p_mid:.0f})", zorder=5)
+    ax.fill_between(
+        wavenumbers,
+        q_lo,
+        q_hi,
+        alpha=0.20,
+        color=_BLUE,
+        label=f"[p{p_lo:.0f}, p{p_hi:.0f}] band",
+    )
+    ax.fill_between(
+        wavenumbers,
+        mean - n_sigma * std,
+        mean + n_sigma * std,
+        alpha=0.35,
+        color=_BLUE,
+        label=f"Mean ± {n_sigma:.0f}σ",
+    )
+    ax.plot(wavenumbers, mean, color=_BLUE, linewidth=2.0, label="Posterior mean")
+    ax.plot(
+        wavenumbers,
+        median,
+        color="darkorange",
+        linewidth=1.5,
+        linestyle="-.",
+        label=f"Median (p{p_mid:.0f})",
+        zorder=5,
+    )
     _ref_line(ax)
     _axis_labels(ax)
     ax.set_title(f"Credible tube  |  {title_base}")
@@ -1768,19 +1897,19 @@ def plot_raman_credible_band(
     import matplotlib.pyplot as plt
     from matplotlib.ticker import AutoMinorLocator
 
-    raman = ensemble["raman"] * frame_duration   # [N, W] counts/frame
-    ref   = reference_raman * frame_duration if reference_raman is not None else None
+    raman = ensemble["raman"] * frame_duration  # [N, W] counts/frame
+    ref = reference_raman * frame_duration if reference_raman is not None else None
 
-    p_lo  = 100 * (1 - ci) / 2
-    p_hi  = 100 - p_lo
-    q_lo  = np.percentile(raman, p_lo,  axis=0)
+    p_lo = 100 * (1 - ci) / 2
+    p_hi = 100 - p_lo
+    q_lo = np.percentile(raman, p_lo, axis=0)
     median = np.percentile(raman, 50.0, axis=0)
-    q_hi  = np.percentile(raman, p_hi,  axis=0)
-    std   = raman.std(axis=0, ddof=1)
-    N     = len(raman)
+    q_hi = np.percentile(raman, p_hi, axis=0)
+    std = raman.std(axis=0, ddof=1)
+    N = len(raman)
 
     _BLUE = "#4477AA"
-    _REF  = "#BB5566"
+    _REF = "#BB5566"
 
     def _style(ax):
         ax.spines["top"].set_visible(False)
@@ -1792,16 +1921,27 @@ def plot_raman_credible_band(
     fig, (ax_band, ax_std) = plt.subplots(1, 2, figsize=figsize)
 
     # ── Left: credible band ───────────────────────────────────────────────────
-    ax_band.fill_between(
-        wavenumbers, q_lo, q_hi,
-        alpha=0.25, color=_BLUE,
-        label=f"{int(ci*100):d}% CI  (p{p_lo:.0f}–p{p_hi:.0f})",
-    )
+
     ax_band.plot(wavenumbers, median, color=_BLUE, linewidth=1.8, label="Median")
     if ref is not None:
-        ax_band.plot(wavenumbers, ref, color=_REF, linewidth=1.5,
-                     linestyle="--", label="Ground truth", zorder=5)
+        ax_band.plot(
+            wavenumbers,
+            ref,
+            color=_REF,
+            linewidth=1.5,
+            linestyle="--",
+            label="Ground truth",
+            zorder=5,
+        )
     _style(ax_band)
+    ax_band.fill_between(
+        wavenumbers,
+        q_lo,
+        q_hi,
+        alpha=0.25,
+        color=_BLUE,
+        label=f"{int(ci*100):d}% CI  (p{p_lo:.0f}–p{p_hi:.0f})",
+    )
     ax_band.set_ylabel("Intensity (counts/frame)", fontsize=9)
     ax_band.set_title(f"Raman posterior  (N={N})", fontsize=9, fontweight="bold")
     ax_band.legend(fontsize=8, frameon=False)
@@ -1816,10 +1956,13 @@ def plot_raman_credible_band(
 
     # ── Posterior summary ─────────────────────────────────────────────────────
     cv = std.mean() / (raman.mean() + 1e-12)
-    print(f"Raman posterior  N={N}  |  CV={cv:.3f}  |  "
-          f"σ range=[{std.min():.4f}, {std.max():.4f}]")
+    print(
+        f"Raman posterior  N={N}  |  CV={cv:.3f}  |  "
+        f"σ range=[{std.min():.4f}, {std.max():.4f}]"
+    )
     if ref is not None:
         from scipy.stats import pearsonr
+
         r, _ = pearsonr(median, ref)
         print(f"Pearson r (median vs GT): {r:.4f}")
 
@@ -1901,9 +2044,9 @@ def _ds_intensity(ds: "xr.Dataset", sample_idx: int, use_clean: bool) -> np.ndar
     # Detect axis order from dimension names
     dims = var.dims
     if dims[0] in ("bleaching_time", "time"):
-        return arr          # already [T, W]
+        return arr  # already [T, W]
     else:
-        return arr.T        # [W, T] → [T, W]
+        return arr.T  # [W, T] → [T, W]
 
 
 def _ds_raman_gt(ds: "xr.Dataset", sample_idx: int, wn: np.ndarray) -> np.ndarray:
@@ -1986,15 +2129,15 @@ def decomp_from_gt_dataset(
     wn = ds.coords["wavenumber"].values
     frame_dur = _ds_frame_duration(ds)
 
-    raman_arr = _ds_raman_gt(ds, sample_idx, wn)                       # [W]
-    rates_arr = ds["decay_rates_gt"].isel(sample=sample_idx).values    # [F]
-    abund_arr = ds["abundances_gt"].isel(sample=sample_idx).values     # [F]
+    raman_arr = _ds_raman_gt(ds, sample_idx, wn)  # [W]
+    rates_arr = ds["decay_rates_gt"].isel(sample=sample_idx).values  # [F]
+    abund_arr = ds["abundances_gt"].isel(sample=sample_idx).values  # [F]
 
     bases_var = ds["fluorophore_bases_gt"]
     if "sample" in bases_var.dims:
-        bases_arr = bases_var.isel(sample=sample_idx).values           # [F, W]
+        bases_arr = bases_var.isel(sample=sample_idx).values  # [F, W]
     else:
-        bases_arr = bases_var.values                                   # [F, W] shared
+        bases_arr = bases_var.values  # [F, W] shared
 
     return DecompositionResult(
         raman=SpectralData(raman_arr, wn),
@@ -2037,48 +2180,63 @@ _NEURIPS_RC: dict = {
 # =============================================================================
 from matplotlib.colors import LinearSegmentedColormap as _LSC
 
-_STOP_OBSERVED = [          # teal-green perceptual sequence (≈ viridis flavour)
-    (0.00, "#0d0221"),      # near-black purple
-    (0.25, "#1b4f72"),      # deep ocean blue
-    (0.55, "#1abc9c"),      # medium teal
-    (0.80, "#76d7c4"),      # soft mint
-    (1.00, "#d5f5e3"),      # pale mint (NOT white)
+_STOP_OBSERVED = [  # teal-green perceptual sequence (≈ viridis flavour)
+    (0.00, "#0d0221"),  # near-black purple
+    (0.25, "#1b4f72"),  # deep ocean blue
+    (0.55, "#1abc9c"),  # medium teal
+    (0.80, "#76d7c4"),  # soft mint
+    (1.00, "#d5f5e3"),  # pale mint (NOT white)
 ]
-_STOP_RAMAN = [             # slate-blue family  (cool, steady — Raman is constant)
-    (0.00, "#0b1629"),      # near-black navy
-    (0.30, "#1a3a6e"),      # deep navy
-    (0.60, "#4a86c8"),      # mid cornflower blue
-    (0.85, "#93bce0"),      # powder blue
-    (1.00, "#d6e9f8"),      # pale sky (NOT white)
+_STOP_RAMAN = [  # slate-blue family  (cool, steady — Raman is constant)
+    (0.00, "#0b1629"),  # near-black navy
+    (0.30, "#1a3a6e"),  # deep navy
+    (0.60, "#4a86c8"),  # mid cornflower blue
+    (0.85, "#93bce0"),  # powder blue
+    (1.00, "#d6e9f8"),  # pale sky (NOT white)
 ]
-_STOP_FLUOR = [             # amber-rose family  (warm, decaying)
-    (0.00, "#2b0a0a"),      # near-black burgundy
-    (0.30, "#8b1a1a"),      # deep crimson
-    (0.60, "#e06c3a"),      # warm amber-orange
-    (0.85, "#f4a97c"),      # light peach
-    (1.00, "#fde8d8"),      # pale blush (NOT white)
+_STOP_FLUOR = [  # amber-rose family  (warm, decaying)
+    (0.00, "#2b0a0a"),  # near-black burgundy
+    (0.30, "#8b1a1a"),  # deep crimson
+    (0.60, "#e06c3a"),  # warm amber-orange
+    (0.85, "#f4a97c"),  # light peach
+    (1.00, "#fde8d8"),  # pale blush (NOT white)
 ]
-_STOP_NOISE = None          # diverging — built separately below
-_STOP_F = [                 # per-fluorophore: 5 distinct hue families
-    [                       # F1 — violet / lavender
-        (0.00, "#120922"),  (0.30, "#4a1a7a"),
-        (0.60, "#8e5bbf"),  (0.85, "#c39ee0"),  (1.00, "#ead6f5"),
+_STOP_NOISE = None  # diverging — built separately below
+_STOP_F = [  # per-fluorophore: 5 distinct hue families
+    [  # F1 — violet / lavender
+        (0.00, "#120922"),
+        (0.30, "#4a1a7a"),
+        (0.60, "#8e5bbf"),
+        (0.85, "#c39ee0"),
+        (1.00, "#ead6f5"),
     ],
-    [                       # F2 — emerald / sage
-        (0.00, "#041a10"),  (0.30, "#0e6644"),
-        (0.60, "#27ae7a"),  (0.85, "#7dcfaf"),  (1.00, "#c8f0e0"),
+    [  # F2 — emerald / sage
+        (0.00, "#041a10"),
+        (0.30, "#0e6644"),
+        (0.60, "#27ae7a"),
+        (0.85, "#7dcfaf"),
+        (1.00, "#c8f0e0"),
     ],
-    [                       # F3 — rose / coral
-        (0.00, "#1f0510"),  (0.30, "#7b1450"),
-        (0.60, "#c94f8a"),  (0.85, "#e89ec4"),  (1.00, "#f8d7ea"),
+    [  # F3 — rose / coral
+        (0.00, "#1f0510"),
+        (0.30, "#7b1450"),
+        (0.60, "#c94f8a"),
+        (0.85, "#e89ec4"),
+        (1.00, "#f8d7ea"),
     ],
-    [                       # F4 — gold / amber
-        (0.00, "#1a0f00"),  (0.30, "#7a4000"),
-        (0.60, "#d4820a"),  (0.85, "#f0bc6a"),  (1.00, "#fde9b8"),
+    [  # F4 — gold / amber
+        (0.00, "#1a0f00"),
+        (0.30, "#7a4000"),
+        (0.60, "#d4820a"),
+        (0.85, "#f0bc6a"),
+        (1.00, "#fde9b8"),
     ],
-    [                       # F5 — teal / cyan
-        (0.00, "#011318"),  (0.30, "#0a4f5e"),
-        (0.60, "#1a9aaa"),  (0.85, "#72ccd6"),  (1.00, "#c5eef2"),
+    [  # F5 — teal / cyan
+        (0.00, "#011318"),
+        (0.30, "#0a4f5e"),
+        (0.60, "#1a9aaa"),
+        (0.85, "#72ccd6"),
+        (1.00, "#c5eef2"),
     ],
 ]
 
@@ -2088,6 +2246,7 @@ def _stops_to_mpl(name: str, stops: list) -> _LSC:
     colours = [c for _, c in stops]
     positions = [p for p, _ in stops]
     from matplotlib.colors import to_rgb
+
     nodes = list(zip(positions, [to_rgb(c) for c in colours]))
     return _LSC.from_list(name, nodes)
 
@@ -2095,6 +2254,7 @@ def _stops_to_mpl(name: str, stops: list) -> _LSC:
 def _stops_to_plotly(stops: list) -> list:
     """Convert (pos, hex) stops to a Plotly colorscale list."""
     from matplotlib.colors import to_rgb
+
     out = []
     for pos, hexc in stops:
         r, g, b = [int(x * 255) for x in to_rgb(hexc)]
@@ -2104,15 +2264,20 @@ def _stops_to_plotly(stops: list) -> list:
 
 # Register matplotlib colormaps (safe to call multiple times)
 _CM_OBSERVED = _stops_to_mpl("lumos_observed", _STOP_OBSERVED)
-_CM_RAMAN    = _stops_to_mpl("lumos_raman",    _STOP_RAMAN)
-_CM_FLUOR    = _stops_to_mpl("lumos_fluor",    _STOP_FLUOR)
-_CM_FS       = [_stops_to_mpl(f"lumos_f{i+1}", s) for i, s in enumerate(_STOP_F)]
+_CM_RAMAN = _stops_to_mpl("lumos_raman", _STOP_RAMAN)
+_CM_FLUOR = _stops_to_mpl("lumos_fluor", _STOP_FLUOR)
+_CM_FS = [_stops_to_mpl(f"lumos_f{i+1}", s) for i, s in enumerate(_STOP_F)]
 
 # Diverging noise map: deep teal ← 0 → muted rose  (stays off-white at centre)
 _CM_NOISE = _LSC.from_list(
     "lumos_noise",
-    [(0.0, "#0b3d40"), (0.35, "#2a9da8"), (0.5, "#e8e8ee"),
-     (0.65, "#c86090"), (1.0, "#4a0a26")],
+    [
+        (0.0, "#0b3d40"),
+        (0.35, "#2a9da8"),
+        (0.5, "#e8e8ee"),
+        (0.65, "#c86090"),
+        (1.0, "#4a0a26"),
+    ],
 )
 
 for _cm in [_CM_OBSERVED, _CM_RAMAN, _CM_FLUOR, _CM_NOISE] + _CM_FS:
@@ -2120,28 +2285,38 @@ for _cm in [_CM_OBSERVED, _CM_RAMAN, _CM_FLUOR, _CM_NOISE] + _CM_FS:
         plt.colormaps.register(_cm, force=True)
     except AttributeError:
         import matplotlib as _mpl
+
         _mpl.cm.register_cmap(cmap=_cm)
 
 # Plotly equivalents (built from the same stops)
 _PX_OBSERVED = _stops_to_plotly(_STOP_OBSERVED)
-_PX_RAMAN    = _stops_to_plotly(_STOP_RAMAN)
-_PX_FLUOR    = _stops_to_plotly(_STOP_FLUOR)
-_PX_NOISE    = [[0.0, "rgb(11,61,64)"],  [0.35, "rgb(42,157,168)"],
-                [0.5,  "rgb(232,232,238)"], [0.65, "rgb(200,96,144)"],
-                [1.0,  "rgb(74,10,38)"]]
-_PX_FS       = [_stops_to_plotly(s) for s in _STOP_F]
+_PX_RAMAN = _stops_to_plotly(_STOP_RAMAN)
+_PX_FLUOR = _stops_to_plotly(_STOP_FLUOR)
+_PX_NOISE = [
+    [0.0, "rgb(11,61,64)"],
+    [0.35, "rgb(42,157,168)"],
+    [0.5, "rgb(232,232,238)"],
+    [0.65, "rgb(200,96,144)"],
+    [1.0, "rgb(74,10,38)"],
+]
+_PX_FS = [_stops_to_plotly(s) for s in _STOP_F]
 
 # Name → Plotly colorscale registry (handles both custom and built-in names)
 _MPL_TO_PLOTLY_SCALE: dict = {
     "lumos_observed": _PX_OBSERVED,
-    "lumos_raman":    _PX_RAMAN,
-    "lumos_fluor":    _PX_FLUOR,
-    "lumos_noise":    _PX_NOISE,
+    "lumos_raman": _PX_RAMAN,
+    "lumos_fluor": _PX_FLUOR,
+    "lumos_noise": _PX_NOISE,
     **{f"lumos_f{i+1}": _PX_FS[i] for i in range(len(_PX_FS))},
     # Built-in pass-throughs (kept for backwards compat / user overrides)
-    "viridis": "Viridis", "magma": "Magma", "plasma": "Plasma",
-    "inferno": "Inferno", "cividis": "Cividis",
-    "RdBu": "RdBu", "Blues": "Blues", "Oranges": "Oranges",
+    "viridis": "Viridis",
+    "magma": "Magma",
+    "plasma": "Plasma",
+    "inferno": "Inferno",
+    "cividis": "Cividis",
+    "RdBu": "RdBu",
+    "Blues": "Blues",
+    "Oranges": "Oranges",
 }
 
 # Names used by _FLUORO_CMAPS (cycled across fluorophores)
@@ -2154,30 +2329,36 @@ _FLUORO_CMAPS = [f"lumos_f{i+1}" for i in range(len(_STOP_F))]
 _PLOTLY_SCENE: dict = dict(
     xaxis=dict(
         title="Wavenumber (cm⁻¹)",
-        showgrid=True, gridcolor="rgba(180,180,190,0.5)",
+        showgrid=True,
+        gridcolor="rgba(180,180,190,0.5)",
         backgroundcolor="rgba(235,237,242,0.5)",
         showbackground=True,
         tickfont=dict(size=11, color="#333"),
         titlefont=dict(size=13, color="#111"),
-        ticks="outside", ticklen=4,
+        ticks="outside",
+        ticklen=4,
     ),
     yaxis=dict(
         title="Time (s)",
-        showgrid=True, gridcolor="rgba(180,180,190,0.5)",
+        showgrid=True,
+        gridcolor="rgba(180,180,190,0.5)",
         backgroundcolor="rgba(235,237,242,0.5)",
         showbackground=True,
         tickfont=dict(size=11, color="#333"),
         titlefont=dict(size=13, color="#111"),
-        ticks="outside", ticklen=4,
+        ticks="outside",
+        ticklen=4,
     ),
     zaxis=dict(
         title="Intensity",
-        showgrid=True, gridcolor="rgba(180,180,190,0.5)",
+        showgrid=True,
+        gridcolor="rgba(180,180,190,0.5)",
         backgroundcolor="rgba(242,242,246,0.6)",
         showbackground=True,
         tickfont=dict(size=11, color="#333"),
         titlefont=dict(size=13, color="#111"),
-        ticks="outside", ticklen=4,
+        ticks="outside",
+        ticklen=4,
     ),
     # Front-right-above: spectrum runs left→right, decay goes into the page
     camera=dict(eye=dict(x=1.6, y=-1.8, z=1.1)),
@@ -2193,6 +2374,7 @@ def _mpl_to_plotly_cmap(name: str):
 def _plotly_scene(camera_eye: Optional[dict] = None) -> dict:
     """Return a copy of _PLOTLY_SCENE, optionally overriding the camera."""
     import copy
+
     s = copy.deepcopy(_PLOTLY_SCENE)
     if camera_eye is not None:
         s["camera"]["eye"] = camera_eye
@@ -2212,7 +2394,7 @@ def _compute_fluorophore_surface(
     T = frame_duration
     ccd = (1.0 - np.exp(-lam * T)) / lam if lam > 1e-12 else T
     decay = abundances[idx] * ccd * np.exp(-lam * time_values)  # [T]
-    return np.outer(decay, bases[idx])                          # [T, W]
+    return np.outer(decay, bases[idx])  # [T, W]
 
 
 def _style_3d_ax(
@@ -2264,8 +2446,8 @@ def _plot_components_3d_mpl(
     # meshgrid(wn_sub, t_sub) → WN shape (T, W), TG shape (T, W).
     # Z [T, W] maps directly — no transpose needed.
     WN, TG = np.meshgrid(wn_sub, t_sub)
-    rcount = len(t_sub)    # rows vary over Y (time)
-    ccount = len(wn_sub)   # cols vary over X (wavenumber)
+    rcount = len(t_sub)  # rows vary over Y (time)
+    ccount = len(wn_sub)  # cols vary over X (wavenumber)
 
     fw = figsize_per_panel[0] * n_cols
     fh = figsize_per_panel[1] * n_rows
@@ -2274,20 +2456,31 @@ def _plot_components_3d_mpl(
         fig = plt.figure(figsize=(fw, fh), dpi=dpi, facecolor="white")
 
         def _add(row: int, col: int, title: str, Z: np.ndarray, cmap: str) -> None:
-            ax = fig.add_subplot(n_rows, n_cols, (row - 1) * n_cols + col, projection="3d")
+            ax = fig.add_subplot(
+                n_rows, n_cols, (row - 1) * n_cols + col, projection="3d"
+            )
             surf = ax.plot_surface(
-                WN, TG, Z,            # Z [T, W] matches meshgrid(wn, t) → (T, W)
+                WN,
+                TG,
+                Z,  # Z [T, W] matches meshgrid(wn, t) → (T, W)
                 cmap=cmap,
                 linewidth=0,
-                antialiased=False,    # False = flat cartoon polygons, no AA shimmer
+                antialiased=False,  # False = flat cartoon polygons, no AA shimmer
                 alpha=1.0,
                 rcount=rcount,
                 ccount=ccount,
-                shade=False,          # flat per-face colour — cartoon look
+                shade=False,  # flat per-face colour — cartoon look
             )
             if show_colorbar:
-                fig.colorbar(surf, ax=ax, shrink=0.38, pad=0.04, aspect=18,
-                             format="%.0f", ticks=plt.MaxNLocator(4))
+                fig.colorbar(
+                    surf,
+                    ax=ax,
+                    shrink=0.38,
+                    pad=0.04,
+                    aspect=18,
+                    format="%.0f",
+                    ticks=plt.MaxNLocator(4),
+                )
             ax.view_init(elev=elev, azim=azim)
             _style_3d_ax(ax, title, label_fontsize, title_fontsize)
 
@@ -2318,7 +2511,7 @@ def _plot_components_3d_plotly(
     specs = [[{"type": "scene"}] * n_cols for _ in range(n_rows)]
     subplot_titles = (
         [p[0] for p in main_panels]
-        + [""] * (n_cols - n_main)          # pad empty slots in row 1
+        + [""] * (n_cols - n_main)  # pad empty slots in row 1
         + [p[0] for p in fluoro_panels]
     )
 
@@ -2332,13 +2525,14 @@ def _plot_components_3d_plotly(
     # X = Wavenumber (left→right), Y = Time (front→back, t=0 at front).
     # Z [T, W] maps directly to go.Surface(x=wn, y=t, z=Z).
     # Flat shading + ambient-only light = clean cartoon appearance.
-    _lighting = dict(ambient=1.0, diffuse=0.0, specular=0.0,
-                     roughness=1.0, fresnel=0.0)
+    _lighting = dict(ambient=1.0, diffuse=0.0, specular=0.0, roughness=1.0, fresnel=0.0)
 
     def _add_trace(row: int, col: int, title: str, Z: np.ndarray, cmap: str) -> None:
         fig.add_trace(
             go.Surface(
-                x=wn_sub, y=t_sub, z=Z,
+                x=wn_sub,
+                y=t_sub,
+                z=Z,
                 colorscale=_mpl_to_plotly_cmap(cmap),
                 showscale=False,
                 name=title,
@@ -2346,7 +2540,8 @@ def _plot_components_3d_plotly(
                 flatshading=True,
                 lighting=_lighting,
             ),
-            row=row, col=col,
+            row=row,
+            col=col,
         )
         scene_idx = (row - 1) * n_cols + col
         key = "scene" if scene_idx == 1 else f"scene{scene_idx}"
@@ -2442,8 +2637,9 @@ def plot_data_3d(
     else:
         arr = np.asarray(data)
         n_t, n_wn = arr.shape
-        sd = SpectralData(arr, np.arange(n_wn, dtype=float),
-                          time_values=np.arange(n_t, dtype=float))
+        sd = SpectralData(
+            arr, np.arange(n_wn, dtype=float), time_values=np.arange(n_t, dtype=float)
+        )
 
     Y = sd.intensities
     time_values = sd.time_values
@@ -2465,40 +2661,50 @@ def plot_data_3d(
 
     if backend == "plotly":
         import plotly.graph_objects as go
+
         # Flat shading + ambient-only = cartoon look, no specular glare
-        _lighting = dict(ambient=1.0, diffuse=0.0, specular=0.0,
-                         roughness=1.0, fresnel=0.0)
+        _lighting = dict(
+            ambient=1.0, diffuse=0.0, specular=0.0, roughness=1.0, fresnel=0.0
+        )
         fig = go.Figure(
             go.Surface(
-                x=wn_sub, y=t_sub, z=Z,   # X=Wavenumber, Y=Time, no transpose
+                x=wn_sub,
+                y=t_sub,
+                z=Z,  # X=Wavenumber, Y=Time, no transpose
                 colorscale=_mpl_to_plotly_cmap(cmap),
                 opacity=1.0,
                 flatshading=True,
                 lighting=_lighting,
                 showscale=show_colorbar,
-                colorbar=dict(
-                    title=dict(text="Intensity", font=dict(size=13)),
-                    tickfont=dict(size=11),
-                    thickness=14, len=0.65,
-                ) if show_colorbar else None,
+                colorbar=(
+                    dict(
+                        title=dict(text="Intensity", font=dict(size=13)),
+                        tickfont=dict(size=11),
+                        thickness=14,
+                        len=0.65,
+                    )
+                    if show_colorbar
+                    else None
+                ),
             )
         )
         fig.update_layout(
             scene=_plotly_scene(),
-            title=dict(text=f"<b>{title}</b>", font=dict(size=15), x=0.5,
-                       xanchor="center"),
+            title=dict(
+                text=f"<b>{title}</b>", font=dict(size=15), x=0.5, xanchor="center"
+            ),
             width=750,
             height=600,
             margin=dict(l=10, r=10, t=55, b=10),
-            font=dict(family="Arial, Helvetica, sans-serif", size=13,
-                      color="#222222"),
+            font=dict(family="Arial, Helvetica, sans-serif", size=13, color="#222222"),
             paper_bgcolor="white",
         )
         return fig
 
     # matplotlib — X = Wavenumber (left→right), Y = Time (front→back)
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-    WN, TG = np.meshgrid(wn_sub, t_sub)       # both (T, W)
+
+    WN, TG = np.meshgrid(wn_sub, t_sub)  # both (T, W)
     rcount = len(t_sub)
     ccount = len(wn_sub)
 
@@ -2506,7 +2712,9 @@ def plot_data_3d(
         fig = plt.figure(figsize=figsize, dpi=dpi, facecolor="white")
         ax = fig.add_subplot(1, 1, 1, projection="3d")
         surf = ax.plot_surface(
-            WN, TG, Z,                 # Z [T, W] matches meshgrid(wn, t) → (T, W)
+            WN,
+            TG,
+            Z,  # Z [T, W] matches meshgrid(wn, t) → (T, W)
             cmap=cmap,
             linewidth=0,
             antialiased=False,
@@ -2516,8 +2724,15 @@ def plot_data_3d(
             shade=False,
         )
         if show_colorbar:
-            fig.colorbar(surf, ax=ax, shrink=0.38, pad=0.04, aspect=18,
-                         format="%.0f", ticks=plt.MaxNLocator(4))
+            fig.colorbar(
+                surf,
+                ax=ax,
+                shrink=0.38,
+                pad=0.04,
+                aspect=18,
+                format="%.0f",
+                ticks=plt.MaxNLocator(4),
+            )
         ax.view_init(elev=elev, azim=azim)
         _style_3d_ax(ax, title, label_fontsize, title_fontsize)
         plt.tight_layout(pad=1.2)
@@ -2597,7 +2812,7 @@ def plot_components_3d(
     # Unpack inputs
     # ------------------------------------------------------------------
     if hasattr(data, "intensities"):
-        Y = data.intensities          # [T, W]
+        Y = data.intensities  # [T, W]
         time_values = data.time_values
         wavenumbers = data.wavenumbers
     else:
@@ -2605,9 +2820,9 @@ def plot_components_3d(
         time_values = None
         wavenumbers = None
 
-    raman = decomposition.raman.intensities                       # [W]
-    bases = decomposition.fluorophore_spectra.intensities         # [F, W]
-    rates = decomposition.rates                                   # [F]
+    raman = decomposition.raman.intensities  # [W]
+    bases = decomposition.fluorophore_spectra.intensities  # [F, W]
+    rates = decomposition.rates  # [F]
     abundances = (
         decomposition.abundances
         if decomposition.abundances is not None
@@ -2647,7 +2862,9 @@ def plot_components_3d(
     noise = Y - reconstruction
 
     fluoro_surfaces = [
-        _compute_fluorophore_surface(bases, abundances, rates, time_values, frame_dur, i)
+        _compute_fluorophore_surface(
+            bases, abundances, rates, time_values, frame_dur, i
+        )
         for i in range(n_fluoro)
     ]
 
@@ -2693,7 +2910,15 @@ def plot_components_3d(
         return _plot_components_3d_plotly(wn_sub, t_sub, main_panels, fluoro_panels)
 
     return _plot_components_3d_mpl(
-        wn_sub, t_sub, main_panels, fluoro_panels,
-        elev, azim, figsize_per_panel, dpi,
-        label_fontsize, title_fontsize, show_colorbar,
+        wn_sub,
+        t_sub,
+        main_panels,
+        fluoro_panels,
+        elev,
+        azim,
+        figsize_per_panel,
+        dpi,
+        label_fontsize,
+        title_fontsize,
+        show_colorbar,
     )
