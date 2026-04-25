@@ -217,6 +217,16 @@ class SyntheticBleachingDataset:
         ref_wavenumbers = (
             self.wavenumbers[0] if self.wavenumbers.ndim == 2 else self.wavenumbers
         )
+        # Pre-interpolate ALL fluorophore spectra onto the target wavenumber axis once.
+        # For use_shared_bases=False this avoids N_samples × PCHIP calls in the loop;
+        # for use_shared_bases=True it avoids the N_samples isel loop for names.
+        self._all_fluor_bases: Optional[np.ndarray] = None
+        self._all_fluor_names: Optional[np.ndarray] = None
+        if fluorophore_xr is not None:
+            self._all_fluor_bases, self._all_fluor_names = (
+                self._precompute_fluor_bases(ref_wavenumbers)
+            )
+
         self.fluorophore_names: list[list[str]] = []
         if config.use_shared_bases:
             # self.fluorophore_names = np.empty(self.config.n_fluorophores)
@@ -264,6 +274,52 @@ class SyntheticBleachingDataset:
 
         self.dataset: Optional[xr.Dataset] = None
 
+    def _precompute_fluor_bases(
+        self, target_wavenumbers: np.ndarray
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Interpolate every fluorophore spectrum to target_wavenumbers once.
+
+        Returns
+        -------
+        all_bases : np.ndarray [N_fluor, W_target]
+            L-inf normalised, interpolated spectra for every fluorophore.
+        all_names : np.ndarray or None
+            Fluorophore name strings aligned with the sample axis, or None.
+        """
+        assert self.fluorophore_xr is not None
+        fluor_ds = self.fluorophore_xr
+
+        if "wavenumber" in fluor_ds.coords:
+            source_wn = fluor_ds["wavenumber"].values
+            if source_wn.ndim > 1:
+                source_wn = source_wn[0]
+        elif "wavelength" in fluor_ds.coords:
+            from ramanlib.bleaching.fluorophores import nm_to_wavenumber
+
+            source_wn = nm_to_wavenumber(
+                fluor_ds["wavelength"].values, laser_nm=self.config.laser_nm
+            )
+        else:
+            raise ValueError(
+                "Fluorophore dataset must have 'wavenumber' or 'wavelength'"
+            )
+
+        all_intensities = fluor_ds["intensity"].values  # [N_fluor, W_src]
+        all_bases = interpolate_bases(
+            all_intensities,
+            source_wn,
+            target_wavenumbers,
+            method=self.config.interpolation_method,
+            smooth_sigma=self.config.smooth_sigma,
+        )
+        all_bases = linf_normalize(all_bases, axis=1)  # [N_fluor, W_target]
+
+        all_names = None
+        if "fluorophore_name" in fluor_ds:
+            all_names = fluor_ds["fluorophore_name"].values  # [N_fluor]
+
+        return all_bases, all_names
+
     def _generate_fluorophore_bases(self, wavenumbers: np.ndarray) -> np.ndarray:
         """Generate fluorophore basis spectra."""
         n_f = self.config.n_fluorophores
@@ -292,13 +348,14 @@ class SyntheticBleachingDataset:
         return linf_normalize(bases, axis=1)
 
     def _sample_real_fluorophores(self, target_wavenumbers: np.ndarray) -> np.ndarray:
-        """Sample real fluorophore spectra from fluorophore_xr dataset."""
-        # print("Sampling real fluorophore spectra...")
-        assert self.fluorophore_xr is not None
+        """Sample real fluorophore spectra from the precomputed basis array.
+
+        Uses self._all_fluor_bases (precomputed at init) — just index, no PCHIP.
+        """
+        assert self._all_fluor_bases is not None
 
         n_f = self.config.n_fluorophores
-        fluor_ds = self.fluorophore_xr
-        n_available = len(fluor_ds["sample"])
+        n_available = len(self._all_fluor_bases)
 
         if n_f > n_available:
             print(
@@ -307,72 +364,18 @@ class SyntheticBleachingDataset:
             indices = self.rng.choice(n_available, size=n_f, replace=True)
         else:
             indices = self.rng.choice(n_available, size=n_f, replace=False)
-        if "fluorophore_name" in fluor_ds:
+
+        if self._all_fluor_names is not None:
+            names = self._all_fluor_names[indices]
             if self.config.use_shared_bases:
-                # if shared we need to stack / copy so there is one set of bases per sample
-                for i in range(self.config.n_samples):
-                    self.fluorophore_names.append(
-                        fluor_ds.isel(sample=indices).fluorophore_name.values
-                    )
+                # Replicate the same name row for every sample (names are fixed)
+                for _ in range(self.config.n_samples):
+                    self.fluorophore_names.append(names)
             else:
-                self.fluorophore_names.append(
-                    fluor_ds.isel(sample=indices).fluorophore_name.values
-                )
+                self.fluorophore_names.append(names)
 
-        bases = np.zeros((n_f, len(target_wavenumbers)))
-
-        if "wavenumber" in fluor_ds.coords:
-            source_wn = fluor_ds["wavenumber"].values
-            # Check if source_wn is shared or per-sample
-            # if source_wn.ndim == 1:
-            #     # print("The fluorophore dataset has a shared wavenumber axis.")
-            #
-            if source_wn.ndim > 1:
-                # print("The fluorophore dataset has a per-sample wavenumber axis.")
-                source_wn = source_wn[0]
-                print("Multiple axes detected")
-
-        elif "wavelength" in fluor_ds.coords:
-            from ramanlib.bleaching.fluorophores import nm_to_wavenumber
-
-            fluor_wavelength = fluor_ds["wavelength"].values
-            source_wn = nm_to_wavenumber(
-                fluor_wavelength, laser_nm=self.config.laser_nm
-            )
-        else:
-            raise ValueError(
-                "Fluorophore dataset must have 'wavenumber' or 'wavelength'"
-            )
-        bases = fluor_ds["intensity"].isel(sample=indices).values
-
-        bases_processed = interpolate_bases(
-            bases,
-            source_wn,
-            target_wavenumbers,
-            method=self.config.interpolation_method,
-            smooth_sigma=self.config.smooth_sigma,
-        )
-
-        # if self.config.fluorophore_variation > 0:
-        #     intensity_scale = self.rng.normal(
-        #         1.0, self.config.fluorophore_variation
-        #     )
-        #     intensity_scale = np.clip(intensity_scale, 0.5, 1.5)
-        #     spectrum = spectrum * intensity_scale
-
-        #     noise_scale = self.config.fluorophore_variation * 0.5
-        #     noise = self.rng.normal(
-        #         0, noise_scale * spectrum.mean(), len(wavenumbers)
-        #     )
-        #     spectrum = spectrum + noise
-
-        #     baseline_offset = self.rng.uniform(0, 0.05 * spectrum.max())
-        #     spectrum = spectrum + baseline_offset
-
-        #     spectrum = np.maximum(spectrum, 0)
-        #     bases[i] = spectrum
-
-        return linf_normalize(bases_processed, axis=1)
+        # Already L-inf normalised and interpolated — just index
+        return self._all_fluor_bases[indices]
 
     def _generate_decay_rates(self, n: Optional[int] = None) -> np.ndarray:
         """Sample decay rates according to configured strategy."""
@@ -593,22 +596,27 @@ class SyntheticBleachingDataset:
         else:
             bases_storage_temp: List[np.ndarray] = []
 
+        # Pre-extract arrays from xarray once to avoid per-sample isel overhead.
+        _all_raman = self.raman_spectra[self.intensity_var].values  # [N_avail, W] or [N_avail, 1, W]
+        if _all_raman.ndim == 3:
+            _all_raman = _all_raman[:, 0, :]  # drop integration_time dim
+
+        _all_species: Optional[np.ndarray] = None
+        if "species" in self.raman_spectra:
+            _all_species = self.raman_spectra["species"].values.astype(str)
+
         print(f"\nGenerating {n_samples} synthetic samples...")
-        if self.fluorophore_xr is not None:
-            print("Sampling real fluorophore spectra...")
         for i in range(n_samples):
             raman_idx = int(raman_indices[i])
-            raman = self.raman_spectra[self.intensity_var].isel(sample=raman_idx).values
+            raman = _all_raman[raman_idx]
 
             if self.wavenumbers.ndim == 2:
                 wn = self.wavenumbers[raman_idx]
             else:
                 wn = self.wavenumbers
 
-            if "species" in self.raman_spectra:
-                species = str(
-                    self.raman_spectra["species"].isel(sample=raman_idx).values
-                )
+            if _all_species is not None:
+                species = str(_all_species[raman_idx])
             else:
                 species = "Unknown"
 
