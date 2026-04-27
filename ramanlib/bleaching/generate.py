@@ -29,7 +29,9 @@ class SyntheticConfig:
     n_samples: int = 5000
     physics_model: Literal["integrated", "factored", "pointsample"] = "pointsample"
     laser_nm: float = 532.0
-    simulate_raman: bool = False  # controls data source in train.py: False = real ATCC, True = synthetic via ramanspy
+    simulate_raman: bool = (
+        False  # controls data source in train.py: False = real ATCC, True = synthetic via ramanspy
+    )
     # Temporal parameters
     bleaching_times: Optional[List[float]] = None
     bleaching_interval: float = 0.1
@@ -223,8 +225,8 @@ class SyntheticBleachingDataset:
         self._all_fluor_bases: Optional[np.ndarray] = None
         self._all_fluor_names: Optional[np.ndarray] = None
         if fluorophore_xr is not None:
-            self._all_fluor_bases, self._all_fluor_names = (
-                self._precompute_fluor_bases(ref_wavenumbers)
+            self._all_fluor_bases, self._all_fluor_names = self._precompute_fluor_bases(
+                ref_wavenumbers
             )
 
         self.fluorophore_names: list[list[str]] = []
@@ -562,6 +564,418 @@ class SyntheticBleachingDataset:
 
         return noisy, clean
 
+    # ------------------------------------------------------------------
+    # Vectorised helpers (used by _generate_vectorized)
+    # ------------------------------------------------------------------
+
+    def _sample_decay_rates_batch(self, n: int) -> np.ndarray:
+        """Sample decay rates for *n* samples at once. Returns [n, F] float32."""
+        n_f = self.config.n_fluorophores
+        if self.config.decay_sampling == "uniform":
+            return self.rng.uniform(
+                self.config.decay_rate_min, self.config.decay_rate_max, (n, n_f)
+            ).astype(np.float32)
+        elif self.config.decay_sampling == "log_uniform":
+            log_min = np.log(self.config.decay_rate_min)
+            log_max = np.log(self.config.decay_rate_max)
+            return np.exp(self.rng.uniform(log_min, log_max, (n, n_f))).astype(
+                np.float32
+            )
+        else:  # multi_component
+            n_slow = (n_f + 2) // 3
+            n_medium = (n_f + 1) // 3
+            n_fast = n_f // 3
+            cols = []
+            for _ in range(n_slow):
+                cols.append(self.rng.uniform(*self.config.decay_slow_range, n))
+            for _ in range(n_medium):
+                cols.append(self.rng.uniform(*self.config.decay_medium_range, n))
+            for _ in range(n_fast):
+                cols.append(self.rng.uniform(*self.config.decay_fast_range, n))
+            rates = np.stack(cols, axis=1).astype(np.float32)  # [n, F]
+            # Per-row shuffle via argsort of random values
+            perm = self.rng.random((n, n_f)).argsort(axis=1)
+            return np.take_along_axis(rates, perm, axis=1)
+
+    def _sample_abundances_batch(
+        self, raman_all: np.ndarray, bases: np.ndarray, n: int
+    ) -> np.ndarray:
+        """Sample abundances for *n* samples at once. Returns [n, F] float32."""
+        n_f = self.config.n_fluorophores
+        fr_ratios = self.rng.uniform(
+            self.config.fr_ratio_min, self.config.fr_ratio_max, n
+        )
+        raw_weights = self.rng.uniform(
+            self.config.fluorophore_weight_min,
+            self.config.fluorophore_weight_max,
+            (n, n_f),
+        )
+        raman_peaks = raman_all.max(axis=1)  # [n]
+        target = np.where(raman_peaks > 0, fr_ratios * raman_peaks, fr_ratios)
+        basis_maxs = bases.max(axis=1)  # [F]
+        current = (raw_weights * basis_maxs[np.newaxis, :]).sum(axis=1)  # [n]
+        safe = np.where(current > 0, current, 1.0)
+        return (raw_weights * (target / safe)[:, np.newaxis]).astype(np.float32)
+
+    def _add_noise_torch(self, clean, device):
+        import torch
+
+        pscale = self.config.poisson_noise_scale
+        gstd = self.config.gaussian_noise_scale
+
+        # 'clean' is the full reconstruction (Raman + Fluorescence).
+        # Clone to leave the stored clean array untouched.
+        noisy = clean.clone()
+
+        if self.config.noise_type == "poisson_gaussian":
+            # In-place multiply and clamp (saves ~7.5 GiB of VRAM overhead)
+            noisy.mul_(pscale).clamp_(min=0.0)
+
+            # Poisson allocates one new tensor, but immediately frees the old 'noisy'
+            noisy = torch.poisson(noisy)
+
+            # In-place divide
+            noisy.div_(pscale)
+
+            # Generate noise, scale it in-place, and add it in-place
+            noisy.add_(torch.randn_like(noisy).mul_(gstd))
+            return noisy
+
+        elif self.config.noise_type == "poisson":
+            noisy.mul_(pscale).clamp_(min=0.0)
+            noisy = torch.poisson(noisy)
+            noisy.div_(pscale)
+            return noisy
+
+        elif self.config.noise_type == "gaussian":
+            noisy.add_(torch.randn_like(noisy).mul_(gstd))
+            return noisy
+
+        return noisy
+
+    def _add_noise_batch(
+        self, raman_per_frame: np.ndarray, fluorescence: np.ndarray
+    ) -> np.ndarray:
+        """Vectorised noise for [B, T, W] arrays. Returns float32."""
+        signal = raman_per_frame + fluorescence  # [B, T, W]
+        if self.config.noise_type == "none":
+            return signal.astype(np.float32)
+        pscale = self.config.poisson_noise_scale
+        gstd = self.config.gaussian_noise_scale
+        if self.config.noise_type == "poisson":
+            scaled = np.maximum(signal * pscale, 0)
+            return (self.rng.poisson(scaled) / pscale).astype(np.float32)
+        elif self.config.noise_type == "gaussian":
+            return (signal + self.rng.normal(0.0, gstd, signal.shape)).astype(
+                np.float32
+            )
+        elif self.config.noise_type == "poisson_gaussian":
+            scaled = np.maximum(signal * pscale, 0)
+            shot = self.rng.poisson(scaled) / pscale
+            read = self.rng.normal(0.0, gstd, signal.shape)
+            return (shot + read).astype(np.float32)
+        else:
+            raise ValueError(f"Unknown noise type: {self.config.noise_type!r}")
+
+    def _sample_per_sample_bases(self, n_samples: int) -> np.ndarray:
+        """Sample n_samples × n_fluorophores bases from the precomputed pool.
+
+        Returns [N, F, W] float32. Fills self.fluorophore_names as a side-effect.
+        """
+        assert self._all_fluor_bases is not None
+        n_f = self.config.n_fluorophores
+        n_available = len(self._all_fluor_bases)
+
+        if n_f <= n_available:
+            # Vectorised sampling without replacement: generate [N, n_available] random
+            # values, argsort each row, take first n_f columns. No Python loop.
+            scores = self.rng.random((n_samples, n_available))
+            all_indices = np.argpartition(scores, n_f, axis=1)[:, :n_f]  # [N, F]
+        else:
+            all_indices = self.rng.integers(0, n_available, size=(n_samples, n_f))
+
+        bases_all = self._all_fluor_bases[all_indices]  # [N, F, W]
+
+        if self._all_fluor_names is not None:
+            self.fluorophore_names = list(self._all_fluor_names[all_indices].tolist())
+
+        return bases_all.astype(np.float32)
+
+    def _generate_vectorized(
+        self,
+        _all_raman: np.ndarray,
+        raman_indices: np.ndarray,
+        _all_species: Optional[np.ndarray],
+    ) -> xr.Dataset:
+        """Vectorised generation for all-active, non-class-conditioned configs.
+
+        Works for both shared and per-sample bases. Replaces the per-sample Python
+        loop with batched torch physics calls, which is 10–100× faster.
+        """
+        import torch
+        from ramanlib.bleaching.physics import (
+            reconstruct_time_series_factored_torch,
+            reconstruct_time_series_integrated_torch,
+            reconstruct_time_series_torch,
+        )
+
+        n_samples = self.config.n_samples
+        n_times = len(self.bleaching_times)
+        n_f = self.config.n_fluorophores
+        n_wn = _all_raman.shape[1]
+        frame_dur = self.config.bleaching_interval
+        physics_model = self.config.physics_model
+        use_shared = self.config.use_shared_bases
+
+        # ── Raman spectra & species ───────────────────────────────────────────
+        raman_all = _all_raman[raman_indices]  # [N, W]
+        if self.wavenumbers.ndim == 2:
+            wavenumbers_all = self.wavenumbers[raman_indices]  # [N, W]
+        else:
+            wavenumbers_all = np.tile(self.wavenumbers, (n_samples, 1))
+
+        if _all_species is not None:
+            species_list = [str(_all_species[i]) for i in raman_indices]
+        else:
+            species_list = ["Unknown"] * n_samples
+
+        # ── Bases ─────────────────────────────────────────────────────────────
+        if use_shared:
+            # shared_bases: [F, W] — reused for every sample in torch via broadcast
+            bases_np = self.shared_bases  # [F, W]
+            if not self.fluorophore_names:
+                self.fluorophore_names = [[""] * n_f for _ in range(n_samples)]
+        else:
+            # per-sample: [N, F, W]
+            bases_np = self._sample_per_sample_bases(n_samples)
+
+        # ── Random parameters (all samples at once) ───────────────────────────
+        decay_rates_gt = self._sample_decay_rates_batch(n_samples)  # [N, F]
+        # _sample_abundances_batch needs [F] max-per-basis for shared, [N,F] for per-sample
+        if use_shared:
+            abundances_gt = self._sample_abundances_batch(
+                raman_all, bases_np, n_samples
+            )  # [N, F]
+        else:
+            # basis_maxs per sample: [N, F]
+            basis_maxs_per_sample = bases_np.max(axis=2)  # [N, F]
+            fr_ratios = self.rng.uniform(
+                self.config.fr_ratio_min, self.config.fr_ratio_max, n_samples
+            )
+            raw_weights = self.rng.uniform(
+                self.config.fluorophore_weight_min,
+                self.config.fluorophore_weight_max,
+                (n_samples, n_f),
+            )
+            raman_peaks = raman_all.max(axis=1)  # [N]
+            target = np.where(raman_peaks > 0, fr_ratios * raman_peaks, fr_ratios)
+            current = (raw_weights * basis_maxs_per_sample).sum(axis=1)  # [N]
+            safe = np.where(current > 0, current, 1.0)
+            abundances_gt = (raw_weights * (target / safe)[:, np.newaxis]).astype(
+                np.float32
+            )
+
+        # ── Physics reconstruction in GPU-friendly batches ────────────────────
+        # Pick the GPU with the most free VRAM. GPU0 is often occupied by training
+        # runs; checking all GPUs avoids stalling on a nearly-full device.
+        if torch.cuda.is_available():
+            n_gpus = torch.cuda.device_count()
+            best_gpu = max(range(n_gpus), key=lambda g: torch.cuda.mem_get_info(g)[0])
+            free_bytes, _ = torch.cuda.mem_get_info(best_gpu)
+            bytes_per_sample = (
+                n_wn * n_times * 4 * 4
+            )  # 4 tensors: clean, noisy, raman, bases slice
+            gpu_batch = max(1, int(free_bytes * 0.7 / bytes_per_sample))
+            if gpu_batch >= 16:
+                device = torch.device(f"cuda:{best_gpu}")
+                batch_size = min(n_samples, gpu_batch, 20_000)
+            else:
+                # Not enough free VRAM on any GPU — fall back to CPU
+                device = torch.device("cpu")
+                batch_size = min(n_samples, 2_000)
+        else:
+            device = torch.device("cpu")
+            batch_size = min(n_samples, 2_000)
+
+        if use_shared:
+            bases_device = torch.from_numpy(bases_np).float().to(device)  # [F, W]
+        time_t = torch.from_numpy(self.bleaching_times.astype(np.float32)).to(device)
+        print(f"  device={device}, batch_size={batch_size}")
+
+        intensity_clean = np.empty((n_samples, n_times, n_wn), dtype=np.float32)
+        intensity_noisy = np.empty((n_samples, n_times, n_wn), dtype=np.float32)
+
+        print(
+            f"\nGenerating {n_samples} synthetic samples "
+            f"(vectorised, device={device}, bases={'shared' if use_shared else 'per-sample'})..."
+        )
+        for start in range(0, n_samples, batch_size):
+            end = min(start + batch_size, n_samples)
+
+            raman_t = torch.from_numpy(raman_all[start:end]).float().to(device)
+            abund_t = torch.from_numpy(abundances_gt[start:end]).float().to(device)
+            rates_t = torch.from_numpy(decay_rates_gt[start:end]).float().to(device)
+
+            if use_shared:
+                b_t = bases_device  # [F, W]
+            else:
+                b_t = (
+                    torch.from_numpy(bases_np[start:end]).float().to(device)
+                )  # [B, F, W]
+
+            if physics_model == "factored":
+                # physical_to_effective_amplitude uses np.exp — use torch ops instead
+                eff_amp = (
+                    abund_t * (1.0 - torch.exp(-rates_t * frame_dur)) / (rates_t + 1e-8)
+                )
+                clean_bwt = reconstruct_time_series_factored_torch(
+                    raman=raman_t,
+                    bases=b_t,
+                    effective_amplitudes=eff_amp,
+                    decay_rates=rates_t,
+                    time_values=time_t,
+                    frame_duration=frame_dur,
+                )
+            elif physics_model == "integrated":
+                clean_bwt = reconstruct_time_series_integrated_torch(
+                    raman=raman_t,
+                    bases=b_t,
+                    abundances=abund_t,
+                    decay_rates=rates_t,
+                    time_values=time_t,
+                    frame_duration=frame_dur,
+                )
+            else:  # pointsample
+                clean_bwt = reconstruct_time_series_torch(
+                    raman=raman_t,
+                    bases=b_t,
+                    abundances=abund_t,
+                    decay_rates=rates_t,
+                    time_values=time_t,
+                    frame_duration=frame_dur,
+                )
+            # clean_bwt: [B, W, T] → [B, T, W] (stay on device for noise)
+            clean_btw_t = clean_bwt.permute(0, 2, 1)  # [B, T, W] on device
+
+            # Noise injection on GPU — avoids transferring [B, T, W] to CPU for rng.poisson
+            noisy_btw_t = self._add_noise_torch(clean_btw_t, device)
+
+            intensity_clean[start:end] = clean_btw_t.cpu().numpy()
+            intensity_noisy[start:end] = noisy_btw_t.cpu().numpy()
+
+            print(f"  Generated {end}/{n_samples}")
+
+        raman_gt = raman_all.astype(np.float32)
+
+        return self._build_dataset(
+            intensity_noisy=intensity_noisy,
+            intensity_clean=intensity_clean,
+            raman_gt=raman_gt,
+            wavenumbers_all=wavenumbers_all,
+            decay_rates_gt=decay_rates_gt,
+            abundances_gt=abundances_gt,
+            species_list=species_list,
+            bases_storage=bases_np,
+            shared_bases=use_shared,
+        )
+
+    def _build_dataset(
+        self,
+        intensity_noisy: np.ndarray,
+        intensity_clean: np.ndarray,
+        raman_gt: np.ndarray,
+        wavenumbers_all: np.ndarray,
+        decay_rates_gt: np.ndarray,
+        abundances_gt: np.ndarray,
+        species_list: list,
+        bases_storage,
+        shared_bases: bool,
+    ) -> xr.Dataset:
+        """Package arrays into an xr.Dataset (shared by both generation paths)."""
+        n_samples = self.config.n_samples
+        n_f = self.config.n_fluorophores
+
+        fluorophore_name = self.fluorophore_names
+
+        ds = xr.Dataset(
+            data_vars={
+                "intensity_raw": (
+                    ["sample", "bleaching_time", "wavenumber"],
+                    intensity_noisy,
+                    {
+                        "long_name": "Synthetic Raman intensity (noisy)",
+                        "units": "counts",
+                    },
+                ),
+                "intensity_clean": (
+                    ["sample", "bleaching_time", "wavenumber"],
+                    intensity_clean,
+                    {
+                        "long_name": "Synthetic Raman intensity (clean)",
+                        "units": "counts",
+                    },
+                ),
+                "raman_gt": (
+                    ["sample", "wavenumber"],
+                    raman_gt,
+                    {"long_name": "Ground truth Raman spectrum"},
+                ),
+                "decay_rates_gt": (
+                    ["sample", "fluorophore"],
+                    decay_rates_gt,
+                    {"long_name": "Ground truth decay rates", "units": "s⁻¹"},
+                ),
+                "abundances_gt": (
+                    ["sample", "fluorophore"],
+                    abundances_gt,
+                    {"long_name": "Ground truth abundances"},
+                ),
+                "wavenumber": (
+                    ["sample", "wavenumber"],
+                    wavenumbers_all,
+                    {"long_name": "Wavenumber axis (per-sample)", "units": "cm⁻¹"},
+                ),
+                "fluorophore_name": (
+                    ["sample", "fluorophore"],
+                    fluorophore_name,
+                    {"long_name": "Ground Truth Fluorophore Name"},
+                ),
+                "species": (["sample"], species_list),
+            },
+            coords={
+                "sample": np.arange(n_samples),
+                "bleaching_time": self.bleaching_times,
+            },
+            attrs={
+                "title": "Synthetic Photobleaching Dataset",
+                "n_samples": n_samples,
+                "n_fluorophores": n_f,
+                "shared_bases": self.config.use_shared_bases,
+                "noise_type": self.config.noise_type,
+                "poisson_noise_scale": self.config.poisson_noise_scale,
+                "gaussian_noise_scale": self.config.gaussian_noise_scale,
+                "fr_ratio_range": f"{self.config.fr_ratio_min}-{self.config.fr_ratio_max}",
+                "decay_rate_range": f"{self.config.decay_rate_min}-{self.config.decay_rate_max} s⁻¹",
+                "seed": self.config.seed,
+            },
+        )
+
+        bases_storage_array = np.array(bases_storage, dtype=np.float32)
+        if shared_bases:
+            ds["fluorophore_bases_gt"] = (
+                ["fluorophore", "wavenumber"],
+                bases_storage_array,
+                {"long_name": "Shared fluorophore basis spectra"},
+            )
+        else:
+            ds["fluorophore_bases_gt"] = (
+                ["sample", "fluorophore", "wavenumber"],
+                bases_storage_array,
+                {"long_name": "Per-sample fluorophore basis spectra"},
+            )
+
+        return ds
+
     def generate(self) -> xr.Dataset:
         """Generate the full synthetic dataset."""
         n_samples = self.config.n_samples
@@ -573,14 +987,8 @@ class SyntheticBleachingDataset:
             if self.wavenumbers.ndim == 2
             else self.wavenumbers  # if not shared wavenumber axis, use first sample's axis
         )
-        intensity_noisy = np.zeros((n_samples, n_times, n_wn), dtype=np.float32)
-        intensity_clean = np.zeros((n_samples, n_times, n_wn), dtype=np.float32)
-        raman_gt = np.zeros((n_samples, n_wn), dtype=np.float32)
-        wavenumbers_all = np.zeros((n_samples, n_wn), dtype=np.float32)
 
         n_raman_available = len(self.raman_spectra["sample"])
-        decay_rates_gt = np.zeros((n_samples, n_f), dtype=np.float32)
-        abundances_gt = np.zeros((n_samples, n_f), dtype=np.float32)
 
         if n_samples > n_raman_available:
             raman_indices = self.rng.choice(n_raman_available, n_samples, replace=True)
@@ -589,21 +997,58 @@ class SyntheticBleachingDataset:
         else:
             raman_indices = self.rng.permutation(n_raman_available)
 
-        species_list = []
-
-        if self.config.use_shared_bases:
-            bases_storage_temp = self.shared_bases
-        else:
-            bases_storage_temp: List[np.ndarray] = []
-
         # Pre-extract arrays from xarray once to avoid per-sample isel overhead.
-        _all_raman = self.raman_spectra[self.intensity_var].values  # [N_avail, W] or [N_avail, 1, W]
+        _all_raman = self.raman_spectra[
+            self.intensity_var
+        ].values  # [N_avail, W] or [N_avail, 1, W]
         if _all_raman.ndim == 3:
             _all_raman = _all_raman[:, 0, :]  # drop integration_time dim
 
         _all_species: Optional[np.ndarray] = None
         if "species" in self.raman_spectra:
             _all_species = self.raman_spectra["species"].values.astype(str)
+
+        # Fast vectorised path: all fluorophores active, no class conditioning.
+        # Covers both shared and per-sample bases — falls back to sequential loop
+        # only for bank-with-subset-active or class-conditioned configs.
+        _can_vectorize = (
+            self.config.n_active_per_sample is None
+            and not self.config.use_class_conditioned_fluorophores
+            and (self.config.use_shared_bases or self._all_fluor_bases is not None)
+        )
+        if _can_vectorize:
+            ds = self._generate_vectorized(_all_raman, raman_indices, _all_species)
+            self.dataset = ds
+            n_wn_actual = ds["wavenumber"].shape[-1]
+            print("\nGenerated dataset:")
+            print(f"  Samples: {n_samples}")
+            print(f"  Bleaching time points: {n_times}")
+            print(
+                f"  Wavenumber axis: per-sample (shape: ({n_samples}, {n_wn_actual}))"
+            )
+            print(f"  Fluorophores: {n_f}")
+            print(
+                f"  Decay rate range: [{self.config.decay_rate_min}, {self.config.decay_rate_max}] s⁻¹"
+            )
+            print(
+                f"  F/R ratio range: [{self.config.fr_ratio_min}, {self.config.fr_ratio_max}]"
+            )
+            return ds
+
+        # ── Sequential fallback (per-sample bases / active subsets / class conditioning) ──
+        intensity_noisy = np.zeros((n_samples, n_times, n_wn), dtype=np.float32)
+        intensity_clean = np.zeros((n_samples, n_times, n_wn), dtype=np.float32)
+        raman_gt = np.zeros((n_samples, n_wn), dtype=np.float32)
+        wavenumbers_all = np.zeros((n_samples, n_wn), dtype=np.float32)
+        decay_rates_gt = np.zeros((n_samples, n_f), dtype=np.float32)
+        abundances_gt = np.zeros((n_samples, n_f), dtype=np.float32)
+
+        species_list = []
+
+        if self.config.use_shared_bases:
+            bases_storage_temp = self.shared_bases
+        else:
+            bases_storage_temp: List[np.ndarray] = []
 
         print(f"\nGenerating {n_samples} synthetic samples...")
         for i in range(n_samples):
@@ -687,96 +1132,24 @@ class SyntheticBleachingDataset:
             if (i + 1) % 500 == 0:
                 print(f"  Generated {i + 1}/{n_samples}")
 
-        fluorophore_name = self.fluorophore_names
-        intensity_noisy = np.array(intensity_noisy, dtype=np.float32)
-        intensity_clean = np.array(intensity_clean, dtype=np.float32)
-        raman_gt = np.array(raman_gt, dtype=np.float32)
-        wavenumbers_all = np.array(wavenumbers_all, dtype=np.float32)
-
-        ds = xr.Dataset(
-            data_vars={
-                "intensity_raw": (
-                    ["sample", "bleaching_time", "wavenumber"],
-                    intensity_noisy,
-                    {
-                        "long_name": "Synthetic Raman intensity (noisy)",
-                        "units": "counts",
-                    },
-                ),
-                "intensity_clean": (
-                    ["sample", "bleaching_time", "wavenumber"],
-                    intensity_clean,
-                    {
-                        "long_name": "Synthetic Raman intensity (clean)",
-                        "units": "counts",
-                    },
-                ),
-                "raman_gt": (
-                    ["sample", "wavenumber"],
-                    raman_gt,
-                    {"long_name": "Ground truth Raman spectrum"},
-                ),
-                "decay_rates_gt": (
-                    ["sample", "fluorophore"],
-                    decay_rates_gt,
-                    {"long_name": "Ground truth decay rates", "units": "s⁻¹"},
-                ),
-                "abundances_gt": (
-                    ["sample", "fluorophore"],
-                    abundances_gt,
-                    {"long_name": "Ground truth abundances"},
-                ),
-                "wavenumber": (
-                    ["sample", "wavenumber"],
-                    wavenumbers_all,
-                    {"long_name": "Wavenumber axis (per-sample)", "units": "cm⁻¹"},
-                ),
-                "fluorophore_name": (
-                    ["sample", "fluorophore"],
-                    fluorophore_name,
-                    {"long_name": "Ground Truth Fluorophore Name"},
-                ),
-                "species": (["sample"], species_list),
-            },
-            coords={
-                "sample": np.arange(n_samples),
-                "bleaching_time": self.bleaching_times,
-            },
-            attrs={
-                "title": "Synthetic Photobleaching Dataset",
-                "n_samples": n_samples,
-                "n_fluorophores": n_f,
-                "shared_bases": self.config.use_shared_bases,
-                "noise_type": self.config.noise_type,
-                "poisson_noise_scale": self.config.poisson_noise_scale,
-                "gaussian_noise_scale": self.config.gaussian_noise_scale,
-                "fr_ratio_range": f"{self.config.fr_ratio_min}-{self.config.fr_ratio_max}",
-                "decay_rate_range": f"{self.config.decay_rate_min}-{self.config.decay_rate_max} s⁻¹",
-                "seed": self.config.seed,
-            },
+        ds = self._build_dataset(
+            intensity_noisy=np.asarray(intensity_noisy, dtype=np.float32),
+            intensity_clean=np.asarray(intensity_clean, dtype=np.float32),
+            raman_gt=np.asarray(raman_gt, dtype=np.float32),
+            wavenumbers_all=np.asarray(wavenumbers_all, dtype=np.float32),
+            decay_rates_gt=decay_rates_gt,
+            abundances_gt=abundances_gt,
+            species_list=species_list,
+            bases_storage=bases_storage_temp,
+            shared_bases=self.config.use_shared_bases,
         )
-
-        if self.config.use_shared_bases:
-            bases_storage_array = np.array(bases_storage_temp, dtype=np.float32)
-            ds["fluorophore_bases_gt"] = (
-                ["fluorophore", "wavenumber"],
-                bases_storage_array,
-                {"long_name": "Shared fluorophore basis spectra"},
-            )
-        else:
-            bases_storage_array = np.array(bases_storage_temp, dtype=np.float32)
-            ds["fluorophore_bases_gt"] = (
-                ["sample", "fluorophore", "wavenumber"],
-                bases_storage_array,
-                {"long_name": "Per-sample fluorophore basis spectra"},
-            )
 
         self.dataset = ds
 
         print("\nGenerated dataset:")
         print(f"  Samples: {n_samples}")
         print(f"  Bleaching time points: {n_times}")
-        print(f"  Wavenumber axis: per-sample (shape: {wavenumbers_all.shape})")
+        print(f"  Wavenumber axis: per-sample (shape: ({n_samples}, {n_wn}))")
         print(f"  Fluorophores: {n_f}")
         print(
             f"  Decay rate range: [{self.config.decay_rate_min}, {self.config.decay_rate_max}] s⁻¹"
