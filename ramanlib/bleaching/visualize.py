@@ -2154,16 +2154,21 @@ def decomp_from_gt_dataset(
 # =============================================================================
 
 _NEURIPS_RC: dict = {
-    # NeurIPS figures: clean sans-serif, white ground, readable at column width
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Helvetica Neue", "Arial", "DejaVu Sans"],
-    "font.size": 12,
-    "axes.labelsize": 12,
-    "axes.titlesize": 14,
+    "font.family": "serif",
+    "font.serif": ["Times New Roman"],
+    "mathtext.fontset": "stix",
+    "font.size": 9,
+    "axes.labelsize": 9,
+    "axes.titlesize": 11,
     "axes.titleweight": "bold",
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "figure.dpi": 150,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "legend.fontsize": 7,
+    "text.usetex": False,
+    "axes.linewidth": 0.8,
+    "grid.linewidth": 0.4,
+    "lines.linewidth": 1.2,
+    "figure.dpi": 300,
     "figure.facecolor": "white",
 }
 
@@ -2403,23 +2408,38 @@ def _style_3d_ax(
     label_fontsize: int,
     title_fontsize: int,
 ) -> None:
-    """Apply NeurIPS-style formatting to a 3-D matplotlib axis.
+    from matplotlib.ticker import MaxNLocator
 
-    Axis convention: X = Wavenumber (cm⁻¹, left→right),
-                     Y = Time (s, front→back, t=0 at front),
-                     Z = Intensity.
-    """
-    ax.set_xlabel("Wavenumber (cm⁻¹)", fontsize=label_fontsize, labelpad=6)
-    ax.set_ylabel("Time (s)", fontsize=label_fontsize, labelpad=6)
-    ax.set_zlabel("Intensity", fontsize=label_fontsize, labelpad=6)
-    ax.set_title(title, fontsize=title_fontsize, pad=10, fontweight="bold")
-    ax.tick_params(labelsize=label_fontsize - 3, pad=2, length=3)
-    for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
-        pane.fill = True
-        pane.set_facecolor((0.93, 0.94, 0.97, 0.6))
-        pane.set_edgecolor((0.75, 0.77, 0.82, 1.0))
-        pane.set_linewidth(0.5)
-    ax.grid(True, alpha=0.3, linewidth=0.4)
+    # 1. Disable Matplotlib's automatic 3D slanting/rotation
+    ax.xaxis.set_rotate_label(False)
+    ax.yaxis.set_rotate_label(False)
+    ax.zaxis.set_rotate_label(False)
+
+    # 2. Set labels with \mathrm{} to ensure the math text is upright, not italic
+    ax.set_xlabel(
+        "\nWavenumber ($\mathrm{cm^{-1}}$)",
+        fontsize=label_fontsize,
+        labelpad=10,
+        rotation=0,
+    )
+    ax.set_ylabel("\nTime (s)", fontsize=label_fontsize, labelpad=10, rotation=0)
+    ax.set_zlabel("Intensity", fontsize=label_fontsize, labelpad=10, rotation=90)
+
+    ax.set_title(title, fontsize=title_fontsize, pad=15, fontweight="bold")
+    ax.tick_params(labelsize=label_fontsize - 1, pad=3)
+
+    ax.xaxis.set_major_locator(MaxNLocator(5))
+    ax.yaxis.set_major_locator(MaxNLocator(5))
+    ax.zaxis.set_major_locator(MaxNLocator(4))
+
+    ax.xaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax.yaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax.zaxis.set_pane_color((1.0, 1.0, 1.0, 0.0))
+    ax.xaxis.line.set_color((1.0, 1.0, 1.0, 0.0))
+    ax.yaxis.line.set_color((1.0, 1.0, 1.0, 0.0))
+    ax.zaxis.line.set_color((1.0, 1.0, 1.0, 0.0))
+
+    ax.grid(True, alpha=0.3, linewidth=0.5, color="#888888")
 
 
 def _plot_components_3d_mpl(
@@ -2435,19 +2455,16 @@ def _plot_components_3d_mpl(
     title_fontsize: int,
     show_colorbar: bool,
 ) -> "Figure":
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 – registers 3d projection
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
     n_main = len(main_panels)
     n_fluoro = len(fluoro_panels)
     n_rows = 1 + (1 if n_fluoro > 0 else 0)
     n_cols = max(n_main, n_fluoro) if n_fluoro > 0 else n_main
 
-    # X = Wavenumber (left→right), Y = Time (front→back, t=0 at front).
-    # meshgrid(wn_sub, t_sub) → WN shape (T, W), TG shape (T, W).
-    # Z [T, W] maps directly — no transpose needed.
     WN, TG = np.meshgrid(wn_sub, t_sub)
-    rcount = len(t_sub)  # rows vary over Y (time)
-    ccount = len(wn_sub)  # cols vary over X (wavenumber)
+    rcount = len(t_sub)
+    ccount = len(wn_sub)
 
     fw = figsize_per_panel[0] * n_cols
     fh = figsize_per_panel[1] * n_rows
@@ -2459,28 +2476,55 @@ def _plot_components_3d_mpl(
             ax = fig.add_subplot(
                 n_rows, n_cols, (row - 1) * n_cols + col, projection="3d"
             )
+
+            # ── THE "SOLID WALLS" TRICK ──
+            z_floor = 0.0  # The baseline level where the walls will hit the floor
+
+            # 1. Pad the intensity array with zeros around all 4 edges
+            Z_pad = np.pad(
+                Z, pad_width=((1, 1), (1, 1)), mode="constant", constant_values=z_floor
+            )
+
+            # 2. Pad the coordinate axes by duplicating the first and last values
+            # This ensures the drop to the floor is perfectly vertical
+            wn_pad = np.pad(wn_sub, pad_width=(1, 1), mode="edge")
+            t_pad = np.pad(t_sub, pad_width=(1, 1), mode="edge")
+
+            # 3. Create the new padded meshgrid
+            WN_pad, TG_pad = np.meshgrid(wn_pad, t_pad)
+
+            # Use the padded arrays for plotting
             surf = ax.plot_surface(
-                WN,
-                TG,
-                Z,  # Z [T, W] matches meshgrid(wn, t) → (T, W)
+                WN_pad,
+                TG_pad,
+                Z_pad,
                 cmap=cmap,
                 linewidth=0,
-                antialiased=False,  # False = flat cartoon polygons, no AA shimmer
+                antialiased=False,
                 alpha=1.0,
-                rcount=rcount,
-                ccount=ccount,
-                shade=False,  # flat per-face colour — cartoon look
+                rcount=len(t_pad),  # Update to padded length
+                ccount=len(wn_pad),  # Update to padded length
+                shade=False,
+                rasterized=True,  # Keep this so Inkscape stays fast!
             )
+            # ──────────────────────────────
+
             if show_colorbar:
-                fig.colorbar(
+                cb = fig.colorbar(
                     surf,
                     ax=ax,
-                    shrink=0.38,
-                    pad=0.04,
-                    aspect=18,
-                    format="%.0f",
+                    shrink=0.45,
+                    pad=0.12,  # Pushes the colorbar away from the 3D plot
+                    aspect=15,
+                    format="%.1f",
                     ticks=plt.MaxNLocator(4),
                 )
+                # FIX: Force the label to rotate and sit outside the ticks
+                cb.set_label(
+                    "Intensity", rotation=270, labelpad=15, fontsize=label_fontsize
+                )
+                cb.ax.tick_params(labelsize=label_fontsize - 1)
+
             ax.view_init(elev=elev, azim=azim)
             _style_3d_ax(ax, title, label_fontsize, title_fontsize)
 
@@ -2490,7 +2534,8 @@ def _plot_components_3d_mpl(
         for col, (title, Z, cmap) in enumerate(fluoro_panels, start=1):
             _add(2, col, title, Z, cmap)
 
-        plt.tight_layout(pad=1.5)
+        # Increase structural padding to prevent panels from overlapping each other
+        plt.subplots_adjust(wspace=0.15, hspace=0.2)
         return fig
 
 
@@ -2583,56 +2628,18 @@ def plot_data_3d(
     dpi: int = 150,
     cmap: str = "lumos_observed",
     title: str = "Observed time series",
-    label_fontsize: int = 12,
-    title_fontsize: int = 14,
-    show_colorbar: bool = True,
+    label_fontsize: int = 9,
+    title_fontsize: int = 11,
+    show_colorbar: bool = False,
 ) -> "Figure":
     """
     NeurIPS-styled 3D surface plot of a raw observed time series — no model or
     decomposition required.
-
-    Accepts a numpy array ``[T, W]``, a :class:`SpectralData` object, or an
-    xarray Dataset from either schema:
-
-    * **generate** (``SyntheticBleachingDataset``) — variables ``intensity_raw``
-      / ``intensity_clean``, coord ``bleaching_time``.
-    * **pipeline** (``process_and_export_dataset``) — variables ``time_series``
-      / ``intensity_clean``, coord ``time``, attr ``frame_duration_s``.
-
-    Parameters
-    ----------
-    data : np.ndarray [T, W], SpectralData, or xr.Dataset
-        Observed intensity data.
-    sample_idx : int
-        Sample index when *data* is an xarray Dataset.
-    use_clean : bool
-        When *data* is a Dataset, prefer ``intensity_clean`` (noise-free forward
-        model) over the noisy observed frames.  Falls back gracefully if not
-        present.
-    time_range : (t_start, t_end) in seconds, optional
-        Restrict the time axis shown.
-    subsample_wn, subsample_time : int
-        Downsampling factors for performance.
-    backend : {"matplotlib", "plotly"}
-    elev, azim : float
-        Viewing angles in degrees (matplotlib only).
-    figsize : (w, h) in inches (matplotlib only).
-    dpi : int (matplotlib only).
-    cmap : str
-        Colormap name.
-    title : str
-        Panel title.
-    label_fontsize, title_fontsize : int
-    show_colorbar : bool
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure or plotly.graph_objects.Figure
     """
     # Unpack input
-    if hasattr(data, "coords"):  # xr.Dataset — generate or pipeline schema
+    if hasattr(data, "coords"):
         sd = data_from_dataset(data, sample_idx=sample_idx, use_clean=use_clean)
-    elif hasattr(data, "intensities"):  # SpectralData
+    elif hasattr(data, "intensities"):
         sd = data
     else:
         arr = np.asarray(data)
@@ -2662,7 +2669,6 @@ def plot_data_3d(
     if backend == "plotly":
         import plotly.graph_objects as go
 
-        # Flat shading + ambient-only = cartoon look, no specular glare
         _lighting = dict(
             ambient=1.0, diffuse=0.0, specular=0.0, roughness=1.0, fresnel=0.0
         )
@@ -2670,7 +2676,7 @@ def plot_data_3d(
             go.Surface(
                 x=wn_sub,
                 y=t_sub,
-                z=Z,  # X=Wavenumber, Y=Time, no transpose
+                z=Z,
                 colorscale=_mpl_to_plotly_cmap(cmap),
                 opacity=1.0,
                 flatshading=True,
@@ -2704,17 +2710,33 @@ def plot_data_3d(
     # matplotlib — X = Wavenumber (left→right), Y = Time (front→back)
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-    WN, TG = np.meshgrid(wn_sub, t_sub)  # both (T, W)
-    rcount = len(t_sub)
-    ccount = len(wn_sub)
+    # ── THE "SOLID WALLS" TRICK ──
+    z_floor = 0.0
+
+    # 1. Pad the intensity array with zeros around all 4 edges
+    Z_pad = np.pad(
+        Z, pad_width=((1, 1), (1, 1)), mode="constant", constant_values=z_floor
+    )
+
+    # 2. Pad the coordinate axes by duplicating the first and last values
+    wn_pad = np.pad(wn_sub, pad_width=(1, 1), mode="edge")
+    t_pad = np.pad(t_sub, pad_width=(1, 1), mode="edge")
+
+    # 3. Create the padded meshgrid
+    WN_pad, TG_pad = np.meshgrid(wn_pad, t_pad)
+
+    rcount = len(t_pad)
+    ccount = len(wn_pad)
+    # ──────────────────────────────
 
     with plt.rc_context(_NEURIPS_RC):
         fig = plt.figure(figsize=figsize, dpi=dpi, facecolor="white")
         ax = fig.add_subplot(1, 1, 1, projection="3d")
+
         surf = ax.plot_surface(
-            WN,
-            TG,
-            Z,  # Z [T, W] matches meshgrid(wn, t) → (T, W)
+            WN_pad,
+            TG_pad,
+            Z_pad,
             cmap=cmap,
             linewidth=0,
             antialiased=False,
@@ -2722,20 +2744,28 @@ def plot_data_3d(
             rcount=rcount,
             ccount=ccount,
             shade=False,
+            rasterized=True,  # Keeps the SVG fast in Inkscape
         )
+
         if show_colorbar:
-            fig.colorbar(
+            cb = fig.colorbar(
                 surf,
                 ax=ax,
                 shrink=0.38,
-                pad=0.04,
+                pad=0.08,
                 aspect=18,
-                format="%.0f",
+                format="%.1f",
                 ticks=plt.MaxNLocator(4),
             )
+            cb.set_label(
+                "Intensity", rotation=270, labelpad=15, fontsize=label_fontsize
+            )
+            cb.ax.tick_params(labelsize=label_fontsize - 1)
+
         ax.view_init(elev=elev, azim=azim)
         _style_3d_ax(ax, title, label_fontsize, title_fontsize)
         plt.tight_layout(pad=1.2)
+
     return fig
 
 
@@ -2747,6 +2777,7 @@ def plot_components_3d(
     subsample_time: int = 1,
     show_noise: bool = True,
     show_individual_fluorophores: bool = True,
+    show_main_panels: bool = True,
     backend: str = "matplotlib",
     elev: float = 22.0,
     azim: float = -50.0,
@@ -2811,6 +2842,9 @@ def plot_components_3d(
     # ------------------------------------------------------------------
     # Unpack inputs
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Unpack inputs
+    # ------------------------------------------------------------------
     if hasattr(data, "intensities"):
         Y = data.intensities  # [T, W]
         time_values = data.time_values
@@ -2830,6 +2864,15 @@ def plot_components_3d(
     )
     n_t, n_wn = Y.shape
     n_fluoro = len(rates)
+
+    n_wn_recon = raman.shape[0]
+    if n_wn != n_wn_recon:
+        w_crop = (n_wn - n_wn_recon) // 2
+        Y = Y[:, w_crop : w_crop + n_wn_recon]
+        if wavenumbers is not None and len(wavenumbers) == n_wn:
+            wavenumbers = wavenumbers[w_crop : w_crop + n_wn_recon]
+        n_wn = n_wn_recon
+    # ─────────────────────────────────────────────────────────────────────
 
     if time_values is None:
         time_values = np.arange(n_t, dtype=float)
@@ -2882,13 +2925,15 @@ def plot_components_3d(
     # ------------------------------------------------------------------
     # Panel definitions
     # ------------------------------------------------------------------
-    main_panels = [
-        ("Observed", _sub(Y), cmap_observed),
-        ("Raman", _sub(raman_surface), cmap_raman),
-        ("Fluorescence", _sub(total_fluor), cmap_fluorescence),
-    ]
-    if show_noise:
-        main_panels.append(("Noise", _sub(noise), cmap_noise))
+    main_panels = []
+    if show_main_panels:
+        main_panels = [
+            ("Observed Input (Raw Data)", _sub(Y), cmap_observed),
+            ("Predicted Raman", _sub(raman_surface), cmap_raman),
+            ("Predicted Total Fluorescence", _sub(total_fluor), cmap_fluorescence),
+        ]
+        if show_noise:
+            main_panels.append(("Predicted Noise (Residual)", _sub(noise), cmap_noise))
 
     if cmap_fluorophores is None:
         cmap_fluorophores = [
@@ -2900,7 +2945,11 @@ def plot_components_3d(
         taus = 1.0 / rates
         for i, (Z, cmap_f) in enumerate(zip(fluoro_surfaces, cmap_fluorophores)):
             fluoro_panels.append(
-                (f"Fluorophore {i + 1}  (τ = {taus[i]:.2f} s)", _sub(Z), cmap_f)
+                (
+                    f"Predicted Fluorophore {i + 1}  (τ = {taus[i]:.2f} s)",
+                    _sub(Z),
+                    cmap_f,
+                )
             )
 
     # ------------------------------------------------------------------
